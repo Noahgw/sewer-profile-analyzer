@@ -568,22 +568,9 @@ else:
                     prev_fid = st.session_state.get("_prev_click_fid")
                     prev_time = st.session_state.get("_prev_click_time", 0.0)
 
-                    if fid == prev_fid and (now - prev_time) < 1.5 and st.session_state.get("select_on_map", False):
-                        # ── Double-click: toggle selection (only when Select on Map is on) ──
-                        sel = st.session_state.get("map_selection", set())
-                        if fid in sel:
-                            sel.discard(fid)
-                        else:
-                            sel.add(fid)
-                        st.session_state["map_selection"] = sel
-                        st.session_state["_prev_click_fid"] = None
-                        st.rerun()
-                    else:
-                        # ── Single click: always inspect feature ──
-                        st.session_state["_prev_click_fid"] = fid
-                        st.session_state["_prev_click_time"] = now
-                        st.session_state["inspected_feature"] = fid
-                        st.rerun()
+                    # ── Click: inspect feature ──
+                    st.session_state["inspected_feature"] = fid
+                    st.rerun()
 
     with detail_col:
         inspected_fid = st.session_state.get("inspected_feature")
