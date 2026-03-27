@@ -488,6 +488,24 @@ with st.sidebar:
             st.session_state["snap_tolerance"] = snap_tolerance
             st.session_state["thresholds"] = thresholds
 
+            # Clear stale selection/inspection state from previous analysis
+            st.session_state["map_selection"] = set()
+            st.session_state["inspected_feature"] = None
+            st.session_state["_prev_map_click"] = None
+            st.session_state["zoom_bounds"] = None
+            st.session_state["_last_processed_drawing"] = None
+
+            # Pre-convert GDFs to WGS84 so box-select doesn't re-convert every time
+            gdfs_4326 = {}
+            for ftype, gdf in gdfs.items():
+                if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
+                    gdfs_4326[ftype] = gdf.to_crs(epsg=4326)
+                elif gdf.crs is None:
+                    gdfs_4326[ftype] = gdf.set_crs(epsg=4326)
+                else:
+                    gdfs_4326[ftype] = gdf
+            st.session_state["gdfs_4326"] = gdfs_4326
+
         st.rerun()
 
     # ── Layer Visibility (only after analysis) ──
@@ -650,6 +668,19 @@ else:
     map_col, detail_col = st.columns([3, 1])
 
     with map_col:
+        # Selection mode banner
+        if st.session_state.get("select_on_map", False):
+            action = st.session_state.get("selection_action", "Add to Selection")
+            sel_count = len(st.session_state.get("map_selection", set()))
+            st.markdown(
+                f'<div style="background:#00FFFF22;border:1px solid #00FFFF;border-radius:4px;'
+                f'padding:6px 12px;margin-bottom:8px;font-size:13px;color:#00FFFF;">'
+                f'<b>Selection Mode:</b> {action} &nbsp;·&nbsp; '
+                f'{sel_count} feature(s) selected &nbsp;·&nbsp; '
+                f'Click features or draw a box to select</div>',
+                unsafe_allow_html=True,
+            )
+
         # Build map with visibility state and zoom
         m = build_base_map(
             pipes_gdf=gdfs.get("pipes"),
@@ -715,22 +746,15 @@ else:
                     bbox = shapely_box(min(lons), min(lats), max(lons), max(lats))
 
                     found_ids = set()
-                    if "pipes" in gdfs:
-                        p_gdf = gdfs["pipes"]
-                        if p_gdf.crs is not None and p_gdf.crs.to_epsg() != 4326:
-                            p_gdf = p_gdf.to_crs(epsg=4326)
-                        elif p_gdf.crs is None:
-                            p_gdf = p_gdf.set_crs(epsg=4326)
+                    gdfs_4326 = st.session_state.get("gdfs_4326", {})
+                    if "pipes" in gdfs_4326:
+                        p_gdf = gdfs_4326["pipes"]
                         pid_col = p_gdf.columns[0]
                         for _, row in p_gdf.iterrows():
                             if row.geometry and not row.geometry.is_empty and bbox.intersects(row.geometry):
                                 found_ids.add(str(row[pid_col]))
-                    if "junctions" in gdfs:
-                        j_gdf = gdfs["junctions"]
-                        if j_gdf.crs is not None and j_gdf.crs.to_epsg() != 4326:
-                            j_gdf = j_gdf.to_crs(epsg=4326)
-                        elif j_gdf.crs is None:
-                            j_gdf = j_gdf.set_crs(epsg=4326)
+                    if "junctions" in gdfs_4326:
+                        j_gdf = gdfs_4326["junctions"]
                         jid_col = j_gdf.columns[0]
                         for _, row in j_gdf.iterrows():
                             if row.geometry and not row.geometry.is_empty and bbox.intersects(row.geometry):
