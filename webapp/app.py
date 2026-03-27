@@ -325,6 +325,7 @@ with st.sidebar:
 
         # ── Selection Tools (ArcGIS Pro-style) ──
         with st.expander("🔷 Selection", expanded=True):
+            st.toggle("Select on Map", key="select_on_map", value=False)
             st.radio(
                 "Mode", ["Add to Selection", "Remove from Selection"],
                 key="selection_action", horizontal=True,
@@ -511,7 +512,7 @@ else:
         )
 
         # ── Process drawn rectangles (Box Select) ──
-        if map_result:
+        if map_result and st.session_state.get("select_on_map", False):
             drawing = map_result.get("last_active_drawing")
             if drawing and drawing != st.session_state.get("_last_processed_drawing"):
                 geom = drawing.get("geometry", {})
@@ -555,7 +556,7 @@ else:
                         st.rerun()
 
         # ── Handle clicks: single = inspect, double = toggle selection ──
-        if map_result:
+        if map_result and st.session_state.get("select_on_map", False):
             click_data = map_result.get("last_object_clicked")
             prev_click = st.session_state.get("_prev_map_click")
             if click_data and click_data != prev_click:
