@@ -556,7 +556,7 @@ else:
                         st.rerun()
 
         # ── Handle clicks: single = inspect, double = toggle selection ──
-        if map_result and st.session_state.get("select_on_map", False):
+        if map_result:
             click_data = map_result.get("last_object_clicked")
             prev_click = st.session_state.get("_prev_map_click")
             if click_data and click_data != prev_click:
@@ -568,8 +568,8 @@ else:
                     prev_fid = st.session_state.get("_prev_click_fid")
                     prev_time = st.session_state.get("_prev_click_time", 0.0)
 
-                    if fid == prev_fid and (now - prev_time) < 1.5:
-                        # ── Double-click: toggle selection ──
+                    if fid == prev_fid and (now - prev_time) < 1.5 and st.session_state.get("select_on_map", False):
+                        # ── Double-click: toggle selection (only when Select on Map is on) ──
                         sel = st.session_state.get("map_selection", set())
                         if fid in sel:
                             sel.discard(fid)
@@ -579,7 +579,7 @@ else:
                         st.session_state["_prev_click_fid"] = None
                         st.rerun()
                     else:
-                        # ── Single click: inspect feature ──
+                        # ── Single click: always inspect feature ──
                         st.session_state["_prev_click_fid"] = fid
                         st.session_state["_prev_click_time"] = now
                         st.session_state["inspected_feature"] = fid
