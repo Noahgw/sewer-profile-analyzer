@@ -866,11 +866,10 @@ else:
         map_sel = st.session_state.get("map_selection", set())
 
         if inspected_fid:
-            # ── Feature Inspector Panel ──
+            # ── Look up feature ──
             feature_type = None
             feature_row = None
 
-            # Look up in pipes
             if "pipes" in gdfs:
                 pid_col = gdfs["pipes"].columns[0]
                 match = gdfs["pipes"][gdfs["pipes"][pid_col].astype(str) == str(inspected_fid)]
@@ -878,7 +877,6 @@ else:
                     feature_type = "pipes"
                     feature_row = match.iloc[0]
 
-            # Look up in junctions
             if feature_row is None and "junctions" in gdfs:
                 jid_col = gdfs["junctions"].columns[0]
                 match = gdfs["junctions"][gdfs["junctions"][jid_col].astype(str) == str(inspected_fid)]
@@ -897,140 +895,7 @@ else:
                 unsafe_allow_html=True,
             )
 
-            if feature_row is not None:
-                # ── Mapped fields ──
-                ftype_mappings = st.session_state.get("mappings", {}).get(feature_type, {})
-                mapped_items = []
-                for internal_name, source_col in ftype_mappings.items():
-                    if source_col and source_col in feature_row.index:
-                        val = feature_row[source_col]
-                        if pd.notna(val):
-                            mapped_items.append((internal_name, val))
-
-                if mapped_items:
-                    st.markdown("**Mapped Fields**")
-                    for field_name, val in mapped_items:
-                        st.markdown(
-                            f'<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:13px;border-bottom:1px solid #eee;">'
-                            f'<span style="color:#666;">{field_name}</span>'
-                            f'<span style="font-weight:500;">{val}</span></div>',
-                            unsafe_allow_html=True,
-                        )
-
-                # ── All attributes (collapsible) ──
-                with st.expander("All Attributes"):
-                    for col in feature_row.index:
-                        if col != "geometry":
-                            val = feature_row[col]
-                            if pd.notna(val):
-                                st.markdown(
-                                    f'<span style="color:#888;font-size:12px;">{col}:</span> '
-                                    f'<span style="font-size:12px;">{val}</span>',
-                                    unsafe_allow_html=True,
-                                )
-            else:
-                st.caption("Feature not found in loaded data.")
-
-            # ── Issues for this feature ──
-            feature_issues = [
-                i for i in filtered_issues
-                if str(i.feature_id) == str(inspected_fid)
-            ]
-            st.markdown("---")
-            if feature_issues:
-                st.markdown(f"**Issues ({len(feature_issues)})**")
-                for issue in feature_issues:
-                    color = ISSUE_COLORS.get(issue.issue_type, "#999")
-                    display_name = ISSUE_DISPLAY_NAMES.get(issue.issue_type, issue.issue_type)
-                    st.markdown(
-                        f'<div style="margin:6px 0 2px 0;">'
-                        f'<span style="color:{color};font-size:14px;">●</span> '
-                        f'<b>{display_name}</b> '
-                        f'<span style="font-size:11px;color:#888;">({issue.severity})</span>'
-                        f'</div>'
-                        f'<div style="font-size:12px;color:#555;margin-left:18px;margin-bottom:6px;">'
-                        f'{issue.message}</div>',
-                        unsafe_allow_html=True,
-                    )
-            else:
-                st.success("No issues for this feature.", icon="✅")
-
-            # ── Fix Options ──
-            fixable_issues = [i for i in feature_issues if get_strategies(i.issue_type)]
-            if fixable_issues:
-                st.markdown("---")
-                st.markdown("**Fix Options**")
-                for idx, issue in enumerate(fixable_issues):
-                    strategies = get_strategies(issue.issue_type)
-                    display_name = ISSUE_DISPLAY_NAMES.get(issue.issue_type, issue.issue_type)
-                    strategy_names = [s[1] for s in strategies]
-                    selected_strategy = st.selectbox(
-                        f"{display_name}",
-                        strategy_names,
-                        key=f"fix_strategy_{inspected_fid}_{issue.issue_type}_{idx}",
-                    )
-
-                    # Find the strategy key
-                    strategy_key = next(s[0] for s in strategies if s[1] == selected_strategy)
-
-                    fix_col1, fix_col2 = st.columns(2)
-                    with fix_col1:
-                        if st.button("Preview", key=f"preview_{inspected_fid}_{idx}",
-                                     use_container_width=True):
-                            entries = compute_fix(
-                                strategy_key, issue,
-                                network["graph"],
-                                st.session_state["edit_ledger"],
-                            )
-                            st.session_state["preview_entries"] = entries
-                            st.session_state["preview_issue_key"] = f"{inspected_fid}_{idx}"
-                            st.rerun()
-
-                    with fix_col2:
-                        if st.button("Apply", key=f"apply_{inspected_fid}_{idx}",
-                                     use_container_width=True, type="primary"):
-                            entries = compute_fix(
-                                strategy_key, issue,
-                                network["graph"],
-                                st.session_state["edit_ledger"],
-                            )
-                            if entries:
-                                apply_group(st.session_state["edit_ledger"], entries)
-                                st.session_state["preview_entries"] = None
-                                st.rerun()
-
-                    # Show preview if it matches this issue
-                    preview = st.session_state.get("preview_entries")
-                    preview_key = st.session_state.get("preview_issue_key")
-                    if preview is not None and preview_key == f"{inspected_fid}_{idx}":
-                        if preview:
-                            preview_data = []
-                            for e in preview:
-                                preview_data.append({
-                                    "Feature": e.feature_id,
-                                    "Field": e.field,
-                                    "Old": f"{e.old_value:.3f}" if e.old_value is not None else "—",
-                                    "New": f"{e.new_value:.3f}" if e.new_value is not None else "—",
-                                    "Reason": e.reason,
-                                })
-                            st.dataframe(pd.DataFrame(preview_data), hide_index=True,
-                                         use_container_width=True, height=min(35 * len(preview_data) + 38, 200))
-                        else:
-                            st.caption("No changes needed.")
-
-            # ── Undo last fix ──
-            ledger = st.session_state.get("edit_ledger", [])
-            if ledger:
-                summary = ledger_summary(ledger)
-                st.markdown("---")
-                st.caption(f"{summary['total_edits']} pending edit(s) across {summary['total_fixes']} fix(es)")
-                if st.button("Undo Last Fix", key="undo_fix", use_container_width=True):
-                    undo_last_group(st.session_state["edit_ledger"])
-                    st.session_state["preview_entries"] = None
-                    st.rerun()
-
-            # ── Action buttons ──
-            st.markdown("---")
+            # Action buttons at top
             btn_c1, btn_c2 = st.columns(2)
             with btn_c1:
                 if st.button("🔍 Zoom", key="zoom_inspected", use_container_width=True):
@@ -1055,12 +920,160 @@ else:
                     st.session_state["map_selection"] = sel
                     st.rerun()
 
+            # ── Collect data for tabs ──
+            feature_issues = [
+                i for i in filtered_issues
+                if str(i.feature_id) == str(inspected_fid)
+            ]
+            fixable_issues = [i for i in feature_issues if get_strategies(i.issue_type)]
+            fix_count = len(fixable_issues)
+            issue_count = len(feature_issues)
+
+            # ── Tabs ──
+            tab_labels = ["Info"]
+            if issue_count:
+                tab_labels.append(f"Issues ({issue_count})")
+            if fix_count:
+                tab_labels.append("Fix")
+            detail_tabs = st.tabs(tab_labels)
+
+            # ── Info Tab ──
+            with detail_tabs[0]:
+                if feature_row is not None:
+                    ftype_mappings = st.session_state.get("mappings", {}).get(feature_type, {})
+                    mapped_items = []
+                    for internal_name, source_col in ftype_mappings.items():
+                        if source_col and source_col in feature_row.index:
+                            val = feature_row[source_col]
+                            if pd.notna(val):
+                                mapped_items.append((internal_name, val))
+
+                    if mapped_items:
+                        st.markdown("**Mapped Fields**")
+                        for field_name, val in mapped_items:
+                            st.markdown(
+                                f'<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:13px;border-bottom:1px solid #eee;">'
+                                f'<span style="color:#666;">{field_name}</span>'
+                                f'<span style="font-weight:500;">{val}</span></div>',
+                                unsafe_allow_html=True,
+                            )
+
+                    with st.expander("All Attributes"):
+                        for col in feature_row.index:
+                            if col != "geometry":
+                                val = feature_row[col]
+                                if pd.notna(val):
+                                    st.markdown(
+                                        f'<span style="color:#888;font-size:12px;">{col}:</span> '
+                                        f'<span style="font-size:12px;">{val}</span>',
+                                        unsafe_allow_html=True,
+                                    )
+                else:
+                    st.caption("Feature not found in loaded data.")
+
+            # ── Issues Tab ──
+            if issue_count:
+                with detail_tabs[1]:
+                    for issue in feature_issues:
+                        color = ISSUE_COLORS.get(issue.issue_type, "#999")
+                        display_name = ISSUE_DISPLAY_NAMES.get(issue.issue_type, issue.issue_type)
+                        st.markdown(
+                            f'<div style="margin:6px 0 2px 0;">'
+                            f'<span style="color:{color};font-size:14px;">●</span> '
+                            f'<b>{display_name}</b> '
+                            f'<span style="font-size:11px;color:#888;">({issue.severity})</span>'
+                            f'</div>'
+                            f'<div style="font-size:12px;color:#555;margin-left:18px;margin-bottom:6px;">'
+                            f'{issue.message}</div>',
+                            unsafe_allow_html=True,
+                        )
+
+            # ── Fix Tab ──
+            if fix_count:
+                fix_tab_idx = 2 if issue_count else 1
+                with detail_tabs[fix_tab_idx]:
+                    for idx, issue in enumerate(fixable_issues):
+                        strategies = get_strategies(issue.issue_type)
+                        display_name = ISSUE_DISPLAY_NAMES.get(issue.issue_type, issue.issue_type)
+                        strategy_names = [s[1] for s in strategies]
+
+                        st.markdown(
+                            f'<span style="font-size:13px;font-weight:600;">{display_name}</span>',
+                            unsafe_allow_html=True,
+                        )
+                        selected_strategy = st.selectbox(
+                            "Strategy",
+                            strategy_names,
+                            key=f"fix_strategy_{inspected_fid}_{issue.issue_type}_{idx}",
+                            label_visibility="collapsed",
+                        )
+
+                        strategy_key = next(s[0] for s in strategies if s[1] == selected_strategy)
+
+                        fix_col1, fix_col2 = st.columns(2)
+                        with fix_col1:
+                            if st.button("Preview", key=f"preview_{inspected_fid}_{idx}",
+                                         use_container_width=True):
+                                entries = compute_fix(
+                                    strategy_key, issue,
+                                    network["graph"],
+                                    st.session_state["edit_ledger"],
+                                )
+                                st.session_state["preview_entries"] = entries
+                                st.session_state["preview_issue_key"] = f"{inspected_fid}_{idx}"
+                                st.rerun()
+
+                        with fix_col2:
+                            if st.button("Apply", key=f"apply_{inspected_fid}_{idx}",
+                                         use_container_width=True, type="primary"):
+                                entries = compute_fix(
+                                    strategy_key, issue,
+                                    network["graph"],
+                                    st.session_state["edit_ledger"],
+                                )
+                                if entries:
+                                    apply_group(st.session_state["edit_ledger"], entries)
+                                    st.session_state["preview_entries"] = None
+                                    st.rerun()
+
+                        # Show preview if it matches this issue
+                        preview = st.session_state.get("preview_entries")
+                        preview_key = st.session_state.get("preview_issue_key")
+                        if preview is not None and preview_key == f"{inspected_fid}_{idx}":
+                            if preview:
+                                preview_data = []
+                                for e in preview:
+                                    preview_data.append({
+                                        "Feature": e.feature_id,
+                                        "Field": e.field,
+                                        "Old": f"{e.old_value:.3f}" if e.old_value is not None else "—",
+                                        "New": f"{e.new_value:.3f}" if e.new_value is not None else "—",
+                                        "Reason": e.reason,
+                                    })
+                                st.dataframe(pd.DataFrame(preview_data), hide_index=True,
+                                             use_container_width=True, height=min(35 * len(preview_data) + 38, 200))
+                            else:
+                                st.caption("No changes needed.")
+
+                        if idx < fix_count - 1:
+                            st.markdown("---")
+
+                    # Undo last fix
+                    ledger = st.session_state.get("edit_ledger", [])
+                    if ledger:
+                        summary = ledger_summary(ledger)
+                        st.markdown("---")
+                        st.caption(f"{summary['total_edits']} pending edit(s) across {summary['total_fixes']} fix(es)")
+                        if st.button("Undo Last Fix", key="undo_fix", use_container_width=True):
+                            undo_last_group(st.session_state["edit_ledger"])
+                            st.session_state["preview_entries"] = None
+                            st.rerun()
+
         else:
-            # ── Default: Issues Summary ──
+            # ── No feature selected: Issues Summary ──
             st.markdown("#### Issues Summary")
             render_issues_summary(filtered_issues)
 
-            # ── Zoom to Issue selector ──
             if filtered_issues:
                 st.markdown("---")
                 issue_options = ["(none)"] + [
