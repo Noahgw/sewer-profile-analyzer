@@ -612,14 +612,18 @@ def add_selection_layer(m, selected_ids, pipes_gdf=None, junctions_gdf=None):
             if fid in selected_ids:
                 coords = _extract_line_coords(row.geometry)
                 if coords:
-                    # Dark outline underneath
-                    folium.PolyLine(
+                    # Dark outline underneath (non-interactive so clicks pass through)
+                    outline = folium.PolyLine(
                         coords, color="#000000", weight=12, opacity=0.5,
-                    ).add_to(sel_layer)
+                    )
+                    outline.options["interactive"] = False
+                    outline.add_to(sel_layer)
                     # Cyan highlight on top
-                    folium.PolyLine(
+                    line = folium.PolyLine(
                         coords, color="#00FFFF", weight=8, opacity=0.9,
-                    ).add_to(sel_layer)
+                    )
+                    line.options["interactive"] = False
+                    line.add_to(sel_layer)
                     has_features = True
 
     # Highlight selected junctions with cyan halo
@@ -631,18 +635,22 @@ def add_selection_layer(m, selected_ids, pipes_gdf=None, junctions_gdf=None):
             if fid in selected_ids:
                 latlon = _extract_point_latlon(row.geometry)
                 if latlon:
-                    # Outer glow
-                    folium.CircleMarker(
+                    # Outer glow (non-interactive so clicks pass through)
+                    glow = folium.CircleMarker(
                         location=list(latlon), radius=16,
                         color="#00FFFF", weight=0,
                         fill=True, fill_color="#00FFFF", fill_opacity=0.3,
-                    ).add_to(sel_layer)
+                    )
+                    glow.options["interactive"] = False
+                    glow.add_to(sel_layer)
                     # Inner ring
-                    folium.CircleMarker(
+                    ring = folium.CircleMarker(
                         location=list(latlon), radius=9,
                         color="#00FFFF", weight=3,
                         fill=True, fill_color="#00FFFF", fill_opacity=0.6,
-                    ).add_to(sel_layer)
+                    )
+                    ring.options["interactive"] = False
+                    ring.add_to(sel_layer)
                     has_features = True
 
     if has_features:
