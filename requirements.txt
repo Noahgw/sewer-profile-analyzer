@@ -5,7 +5,7 @@ streamlit-folium>=0.18.0
 networkx>=3.2
 shapely>=2.0
 pyproj>=3.6
-fiona>=1.9
+fiona
 openpyxl>=3.1.0
 pandas>=2.0
 matplotlib>=3.8
