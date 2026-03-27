@@ -437,21 +437,18 @@ def add_issues_to_map(m, issues, pipes_gdf=None, junctions_gdf=None, network_res
                     coords = _extract_line_coords(pipe_geoms[pid])
                     if not coords:
                         continue
-                    # Dark border line (drawn first, underneath)
-                    folium.PolyLine(
-                        coords,
-                        color="#000000",
-                        weight=10,
-                        opacity=0.6,
-                    ).add_to(layer)
+                    # Dark border line (non-interactive, visual only)
+                    border = folium.PolyLine(
+                        coords, color="#000000", weight=10, opacity=0.6,
+                    )
+                    border.options["interactive"] = False
+                    border.add_to(layer)
                     # Bright colored line on top
-                    folium.PolyLine(
-                        coords,
-                        color=color,
-                        weight=7,
-                        opacity=1.0,
-                        tooltip=f"{display_name}: {pid}",
-                    ).add_to(layer)
+                    highlight = folium.PolyLine(
+                        coords, color=color, weight=7, opacity=1.0,
+                    )
+                    highlight.options["interactive"] = False
+                    highlight.add_to(layer)
                     continue
 
             # ── Node issues: large markers ──
@@ -467,51 +464,41 @@ def add_issues_to_map(m, issues, pipes_gdf=None, junctions_gdf=None, network_res
                 if nid in node_coords:
                     c = node_coords[nid]
                     lat, lon = c[1], c[0]
-                    # Outer glow ring
-                    folium.CircleMarker(
-                        location=[lat, lon],
-                        radius=16,
-                        color=color,
-                        fill=True,
-                        fill_color=color,
-                        fill_opacity=0.25,
-                        weight=0,
-                    ).add_to(layer)
-                    # Inner solid marker
-                    folium.CircleMarker(
-                        location=[lat, lon],
-                        radius=9,
-                        color="#000000",
-                        weight=2,
-                        fill=True,
-                        fill_color=color,
-                        fill_opacity=0.9,
-                        tooltip=f"{display_name}: {issue.feature_id}",
-                    ).add_to(layer)
+                    # Outer glow ring (non-interactive)
+                    glow = folium.CircleMarker(
+                        location=[lat, lon], radius=16,
+                        color=color, fill=True, fill_color=color,
+                        fill_opacity=0.25, weight=0,
+                    )
+                    glow.options["interactive"] = False
+                    glow.add_to(layer)
+                    # Inner solid marker (non-interactive)
+                    inner = folium.CircleMarker(
+                        location=[lat, lon], radius=9,
+                        color="#000000", weight=2, fill=True,
+                        fill_color=color, fill_opacity=0.9,
+                    )
+                    inner.options["interactive"] = False
+                    inner.add_to(layer)
                     placed = True
                     break
 
             if not placed and issue.coordinates:
                 lat, lon = issue.coordinates[1], issue.coordinates[0]
-                folium.CircleMarker(
-                    location=[lat, lon],
-                    radius=16,
-                    color=color,
-                    fill=True,
-                    fill_color=color,
-                    fill_opacity=0.25,
-                    weight=0,
-                ).add_to(layer)
-                folium.CircleMarker(
-                    location=[lat, lon],
-                    radius=9,
-                    color="#000000",
-                    weight=2,
-                    fill=True,
-                    fill_color=color,
-                    fill_opacity=0.9,
-                    tooltip=f"{display_name}: {issue.feature_id}",
-                ).add_to(layer)
+                glow = folium.CircleMarker(
+                    location=[lat, lon], radius=16,
+                    color=color, fill=True, fill_color=color,
+                    fill_opacity=0.25, weight=0,
+                )
+                glow.options["interactive"] = False
+                glow.add_to(layer)
+                inner = folium.CircleMarker(
+                    location=[lat, lon], radius=9,
+                    color="#000000", weight=2, fill=True,
+                    fill_color=color, fill_opacity=0.9,
+                )
+                inner.options["interactive"] = False
+                inner.add_to(layer)
 
         layer.add_to(m)
 
