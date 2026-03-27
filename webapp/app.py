@@ -623,13 +623,13 @@ with st.sidebar:
 
                 sel_c1, sel_c2 = st.columns(2)
                 with sel_c1:
-                    if st.button("✕ Clear", key="clear_sel", use_container_width=True):
+                    if st.button("✕ Clear", key="clear_sel", width="stretch"):
                         st.session_state["map_selection"] = set()
                         st.session_state["_prev_map_click"] = None
                         st.session_state["_last_processed_drawing"] = None
                         st.rerun()
                 with sel_c2:
-                    if st.button("🔍 Zoom", key="zoom_sel", use_container_width=True):
+                    if st.button("🔍 Zoom", key="zoom_sel", width="stretch"):
                         bounds = get_feature_bounds(
                             list(map_sel),
                             pipes_gdf=gdfs_ref.get("pipes"),
@@ -899,7 +899,7 @@ else:
             # Action buttons at top
             btn_c1, btn_c2 = st.columns(2)
             with btn_c1:
-                if st.button("🔍 Zoom", key="zoom_inspected", use_container_width=True):
+                if st.button("🔍 Zoom", key="zoom_inspected", width="stretch"):
                     bounds = get_feature_bounds(
                         [inspected_fid],
                         pipes_gdf=gdfs.get("pipes"),
@@ -912,7 +912,7 @@ else:
                         st.rerun()
             with btn_c2:
                 sel_label = "Remove" if in_sel else "Select"
-                if st.button(f"{'✕' if in_sel else '＋'} {sel_label}", key="toggle_inspected_sel", use_container_width=True):
+                if st.button(f"{'✕' if in_sel else '＋'} {sel_label}", key="toggle_inspected_sel", width="stretch"):
                     sel = st.session_state.get("map_selection", set())
                     if in_sel:
                         sel.discard(str(inspected_fid))
@@ -1024,7 +1024,7 @@ else:
                         fix_col1, fix_col2 = st.columns(2)
                         with fix_col1:
                             if st.button("Preview", key=f"preview_{inspected_fid}_{idx}",
-                                         use_container_width=True):
+                                         width="stretch"):
                                 entries = compute_fix(
                                     strategy_key, issue,
                                     network["graph"],
@@ -1036,7 +1036,7 @@ else:
 
                         with fix_col2:
                             if st.button("Apply", key=f"apply_{inspected_fid}_{idx}",
-                                         use_container_width=True, type="primary"):
+                                         width="stretch", type="primary"):
                                 entries = compute_fix(
                                     strategy_key, issue,
                                     network["graph"],
@@ -1064,7 +1064,7 @@ else:
                                         "Reason": e.reason,
                                     })
                                 st.dataframe(pd.DataFrame(preview_data), hide_index=True,
-                                             use_container_width=True, height=min(35 * len(preview_data) + 38, 200))
+                                             width="stretch", height=min(35 * len(preview_data) + 38, 200))
                             else:
                                 st.caption("No changes needed.")
 
@@ -1083,7 +1083,7 @@ else:
 
                         jfix_col1, jfix_col2 = st.columns(2)
                         with jfix_col1:
-                            if st.button("Preview", key="preview_junc_inv", use_container_width=True):
+                            if st.button("Preview", key="preview_junc_inv", width="stretch"):
                                 # Create a synthetic issue for the junction
                                 from src.profile_analyzer import ProfileIssue
                                 synth = ProfileIssue(
@@ -1098,7 +1098,7 @@ else:
                                 st.rerun()
                         with jfix_col2:
                             if st.button("Apply", key="apply_junc_inv",
-                                         use_container_width=True, type="primary"):
+                                         width="stretch", type="primary"):
                                 from src.profile_analyzer import ProfileIssue
                                 synth = ProfileIssue(
                                     "NULL_JUNCTION_INVERT", "HIGH", str(inspected_fid),
@@ -1128,7 +1128,7 @@ else:
                                         "Reason": e.reason,
                                     })
                                 st.dataframe(pd.DataFrame(preview_data), hide_index=True,
-                                             use_container_width=True, height=min(35 * len(preview_data) + 38, 200))
+                                             width="stretch", height=min(35 * len(preview_data) + 38, 200))
                             else:
                                 st.warning("No connected pipes with inverts found.")
 
@@ -1138,7 +1138,7 @@ else:
                         summary = ledger_summary(ledger)
                         st.markdown("---")
                         st.caption(f"{summary['total_edits']} pending edit(s) across {summary['total_fixes']} fix(es)")
-                        if st.button("Undo Last Fix", key="undo_fix", use_container_width=True):
+                        if st.button("Undo Last Fix", key="undo_fix", width="stretch"):
                             undo_last_group(st.session_state["edit_ledger"])
                             st.session_state["preview_entries"] = None
                             st.rerun()

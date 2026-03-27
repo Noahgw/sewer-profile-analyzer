@@ -412,16 +412,25 @@ def adjust_junction_to_pipe(issue, G, ledger):
 
 # ── NULL INVERT (pipes) ──
 
+def _get_pipe_inverts(pid, data, ledger):
+    """Get current US/DS inverts for a pipe, checking edge data and ledger."""
+    us = get_current_value(ledger, pid, "us_invert", _safe_float(data.get("us_invert")))
+    ds = get_current_value(ledger, pid, "ds_invert", _safe_float(data.get("ds_invert")))
+    return us, ds
+
+
 def null_invert_from_junction(issue, G, ledger):
-    """Set missing pipe invert(s) from the connected junction's invert_elev."""
+    """Set missing pipe invert(s) from the connected junction's invert_elev.
+
+    US invert is set from the upstream (from) junction.
+    DS invert is set from the downstream (to) junction.
+    """
     u, v, data = _find_pipe_edge(G, issue.feature_id)
     if data is None:
         return []
 
     pid = str(issue.feature_id)
-    details = issue.details or {}
-    us_inv = get_current_value(ledger, pid, "us_invert", _safe_float(details.get("us_invert")))
-    ds_inv = get_current_value(ledger, pid, "ds_invert", _safe_float(details.get("ds_invert")))
+    us_inv, ds_inv = _get_pipe_inverts(pid, data, ledger)
     entries = []
 
     if us_inv is None:
@@ -430,7 +439,8 @@ def null_invert_from_junction(issue, G, ledger):
                                      _safe_float(u_node.get("invert_elev")))
         if junc_inv is not None:
             entries.append(LedgerEntry(pid, "pipe", "us_invert", None, round(junc_inv, 3),
-                                       f"Set from junction {u} invert", "null_invert_from_junction"))
+                                       f"Set from upstream (from) junction {u}",
+                                       "null_invert_from_junction"))
 
     if ds_inv is None:
         v_node = _get_node(G, v)
@@ -438,7 +448,8 @@ def null_invert_from_junction(issue, G, ledger):
                                      _safe_float(v_node.get("invert_elev")))
         if junc_inv is not None:
             entries.append(LedgerEntry(pid, "pipe", "ds_invert", None, round(junc_inv, 3),
-                                       f"Set from junction {v} invert", "null_invert_from_junction"))
+                                       f"Set from downstream (to) junction {v}",
+                                       "null_invert_from_junction"))
 
     return entries
 
@@ -450,9 +461,7 @@ def null_invert_from_neighbor_pipe(issue, G, ledger):
         return []
 
     pid = str(issue.feature_id)
-    details = issue.details or {}
-    us_inv = get_current_value(ledger, pid, "us_invert", _safe_float(details.get("us_invert")))
-    ds_inv = get_current_value(ledger, pid, "ds_invert", _safe_float(details.get("ds_invert")))
+    us_inv, ds_inv = _get_pipe_inverts(pid, data, ledger)
     entries = []
 
     # Fill US invert from upstream pipe's DS invert
@@ -491,9 +500,7 @@ def null_invert_interpolate(issue, G, ledger):
         return []
 
     pid = str(issue.feature_id)
-    details = issue.details or {}
-    us_inv = get_current_value(ledger, pid, "us_invert", _safe_float(details.get("us_invert")))
-    ds_inv = get_current_value(ledger, pid, "ds_invert", _safe_float(details.get("ds_invert")))
+    us_inv, ds_inv = _get_pipe_inverts(pid, data, ledger)
     length = _safe_float(data.get("length")) or 100
     entries = []
 
@@ -512,7 +519,7 @@ def null_invert_interpolate(issue, G, ledger):
                                    "null_invert_interpolate"))
 
     elif us_inv is None and ds_inv is None:
-        # Both missing — try junctions first, then neighbor pipes
+        # Both missing — try junctions first
         u_node = _get_node(G, u)
         v_node = _get_node(G, v)
         u_inv = get_current_value(ledger, str(u), "invert_elev",
@@ -520,9 +527,15 @@ def null_invert_interpolate(issue, G, ledger):
         v_inv = get_current_value(ledger, str(v), "invert_elev",
                                   _safe_float(v_node.get("invert_elev")))
 
-        if u_inv is not None:
+        if u_inv is not None and v_inv is not None:
+            # Both junctions have inverts — use them directly
             entries.append(LedgerEntry(pid, "pipe", "us_invert", None, round(u_inv, 3),
-                                       f"Set from junction {u} invert", "null_invert_interpolate"))
+                                       f"Set from upstream junction {u}", "null_invert_interpolate"))
+            entries.append(LedgerEntry(pid, "pipe", "ds_invert", None, round(v_inv, 3),
+                                       f"Set from downstream junction {v}", "null_invert_interpolate"))
+        elif u_inv is not None:
+            entries.append(LedgerEntry(pid, "pipe", "us_invert", None, round(u_inv, 3),
+                                       f"Set from upstream junction {u}", "null_invert_interpolate"))
             new_ds = round(u_inv - MIN_SLOPE * length, 3)
             entries.append(LedgerEntry(pid, "pipe", "ds_invert", None, new_ds,
                                        f"Min slope ({MIN_SLOPE}) from junction {u}",
@@ -533,7 +546,7 @@ def null_invert_interpolate(issue, G, ledger):
                                        f"Min slope ({MIN_SLOPE}) to junction {v}",
                                        "null_invert_interpolate"))
             entries.append(LedgerEntry(pid, "pipe", "ds_invert", None, round(v_inv, 3),
-                                       f"Set from junction {v} invert", "null_invert_interpolate"))
+                                       f"Set from downstream junction {v}", "null_invert_interpolate"))
 
     return entries
 
