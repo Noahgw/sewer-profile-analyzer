@@ -39,6 +39,7 @@ from webapp.map_builder import (
 from webapp.fix_toolkit import (
     LedgerEntry, apply_group, undo_last_group, get_current_value,
     get_all_edits, ledger_summary, get_strategies, compute_fix,
+    junction_invert_from_lowest_pipe,
 )
 
 # ── Page Config ──
@@ -926,7 +927,17 @@ else:
                 if str(i.feature_id) == str(inspected_fid)
             ]
             fixable_issues = [i for i in feature_issues if get_strategies(i.issue_type)]
-            fix_count = len(fixable_issues)
+
+            # Check if this is a junction with a null invert (not covered by pipe issues)
+            junction_needs_invert_fix = False
+            if feature_type == "junctions" and feature_row is not None:
+                G = network["graph"]
+                node_data = G.nodes[str(inspected_fid)] if hasattr(G, 'nodes') else G._nodes.get(str(inspected_fid), {})
+                junc_inv = node_data.get("invert_elev")
+                if junc_inv is None:
+                    junction_needs_invert_fix = True
+
+            fix_count = len(fixable_issues) + (1 if junction_needs_invert_fix else 0)
             issue_count = len(feature_issues)
 
             # ── Tabs ──
@@ -1035,6 +1046,8 @@ else:
                                     apply_group(st.session_state["edit_ledger"], entries)
                                     st.session_state["preview_entries"] = None
                                     st.rerun()
+                                else:
+                                    st.warning("No fix available — connected features may also have missing data.")
 
                         # Show preview if it matches this issue
                         preview = st.session_state.get("preview_entries")
@@ -1055,8 +1068,69 @@ else:
                             else:
                                 st.caption("No changes needed.")
 
-                        if idx < fix_count - 1:
+                        if idx < len(fixable_issues) - 1:
                             st.markdown("---")
+
+                    # ── Junction null invert fix ──
+                    if junction_needs_invert_fix:
+                        if fixable_issues:
+                            st.markdown("---")
+                        st.markdown(
+                            '<span style="font-size:13px;font-weight:600;">Missing Junction Invert</span>',
+                            unsafe_allow_html=True,
+                        )
+                        st.caption("Set invert to the lowest connected pipe invert")
+
+                        jfix_col1, jfix_col2 = st.columns(2)
+                        with jfix_col1:
+                            if st.button("Preview", key="preview_junc_inv", use_container_width=True):
+                                # Create a synthetic issue for the junction
+                                from src.profile_analyzer import ProfileIssue
+                                synth = ProfileIssue(
+                                    "NULL_JUNCTION_INVERT", "HIGH", str(inspected_fid),
+                                    f"Junction {inspected_fid}", "Missing invert elevation",
+                                    {"us_node": str(inspected_fid), "ds_node": str(inspected_fid)},
+                                )
+                                entries = junction_invert_from_lowest_pipe(
+                                    synth, network["graph"], st.session_state["edit_ledger"])
+                                st.session_state["preview_entries"] = entries
+                                st.session_state["preview_issue_key"] = "junc_inv"
+                                st.rerun()
+                        with jfix_col2:
+                            if st.button("Apply", key="apply_junc_inv",
+                                         use_container_width=True, type="primary"):
+                                from src.profile_analyzer import ProfileIssue
+                                synth = ProfileIssue(
+                                    "NULL_JUNCTION_INVERT", "HIGH", str(inspected_fid),
+                                    f"Junction {inspected_fid}", "Missing invert elevation",
+                                    {"us_node": str(inspected_fid), "ds_node": str(inspected_fid)},
+                                )
+                                entries = junction_invert_from_lowest_pipe(
+                                    synth, network["graph"], st.session_state["edit_ledger"])
+                                if entries:
+                                    apply_group(st.session_state["edit_ledger"], entries)
+                                    st.session_state["preview_entries"] = None
+                                    st.rerun()
+                                else:
+                                    st.warning("No connected pipes with inverts found.")
+
+                        preview = st.session_state.get("preview_entries")
+                        preview_key = st.session_state.get("preview_issue_key")
+                        if preview is not None and preview_key == "junc_inv":
+                            if preview:
+                                preview_data = []
+                                for e in preview:
+                                    preview_data.append({
+                                        "Feature": e.feature_id,
+                                        "Field": e.field,
+                                        "Old": f"{e.old_value:.3f}" if e.old_value is not None else "—",
+                                        "New": f"{e.new_value:.3f}" if e.new_value is not None else "—",
+                                        "Reason": e.reason,
+                                    })
+                                st.dataframe(pd.DataFrame(preview_data), hide_index=True,
+                                             use_container_width=True, height=min(35 * len(preview_data) + 38, 200))
+                            else:
+                                st.warning("No connected pipes with inverts found.")
 
                     # Undo last fix
                     ledger = st.session_state.get("edit_ledger", [])

@@ -605,7 +605,6 @@ STRATEGIES = {
         ("null_invert_from_junction", "From Connected Junction", null_invert_from_junction),
         ("null_invert_from_neighbor_pipe", "From Neighbor Pipe", null_invert_from_neighbor_pipe),
         ("null_invert_interpolate", "Interpolate (Min Slope)", null_invert_interpolate),
-        ("junction_invert_from_lowest_pipe", "Set Junction to Lowest Pipe", junction_invert_from_lowest_pipe),
     ],
 }
 
