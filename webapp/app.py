@@ -317,6 +317,21 @@ def build_profile_figure(selected_ids, network, gdfs, issues):
         ax.text(mid_x, mid_y, label, ha="center", va="bottom",
                 fontsize=7, color="#cccccc", alpha=0.9)
 
+    # Draw ground surface line (rim elevations)
+    rim_stations = []
+    rim_elevations = []
+    for sta, nid, ndata in profile_nodes:
+        rim = ndata.get("rim_elev")
+        if rim is not None:
+            rim_stations.append(sta)
+            rim_elevations.append(float(rim))
+    if len(rim_stations) >= 2:
+        ax.plot(rim_stations, rim_elevations, color="#8B6914", linewidth=2,
+                linestyle="-", label="Ground Surface", zorder=3)
+        ax.fill_between(rim_stations, rim_elevations,
+                        [max(rim_elevations) + 2] * len(rim_stations),
+                        color="#8B6914", alpha=0.08)
+
     # Draw junction markers
     for sta, nid, ndata in profile_nodes:
         rim = ndata.get("rim_elev")
@@ -362,6 +377,7 @@ def build_profile_figure(selected_ids, network, gdfs, issues):
 
     # Legend
     legend_items = [
+        mpatches.Patch(color="#8B6914", alpha=0.6, label="Ground surface (rim)"),
         mpatches.Patch(color="#4A90D9", alpha=0.4, label="Pipe (normal)"),
         mpatches.Patch(color="#FF4444", alpha=0.4, label="Adverse slope"),
         mpatches.Patch(color="#FF8C00", alpha=0.4, label="Diameter decrease"),
