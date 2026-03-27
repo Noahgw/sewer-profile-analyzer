@@ -726,12 +726,24 @@ else:
             edit_options={"edit": False, "remove": False},
         ).add_to(m)
 
-        # Render interactive map
+        # Render interactive map, preserving zoom/center across reruns
         render_key = st.session_state.get("_map_render_key", 0)
-        map_result = st_folium(
-            m, height=620, use_container_width=True,
-            key=f"main_map_{render_key}",
-        )
+        saved_center = st.session_state.get("_map_center")
+        saved_zoom = st.session_state.get("_map_zoom")
+        folium_kwargs = dict(height=620, use_container_width=True,
+                             key=f"main_map_{render_key}")
+        if saved_center and saved_zoom is not None:
+            folium_kwargs["center"] = saved_center
+            folium_kwargs["zoom"] = saved_zoom
+        map_result = st_folium(m, **folium_kwargs)
+
+        # ── Save current map view for preserving across reruns ──
+        if map_result:
+            if map_result.get("center"):
+                c = map_result["center"]
+                st.session_state["_map_center"] = [c["lat"], c["lng"]]
+            if map_result.get("zoom") is not None:
+                st.session_state["_map_zoom"] = map_result["zoom"]
 
         # ── Process drawn rectangles (Box Select) ──
         if map_result and st.session_state.get("select_on_map", False):
