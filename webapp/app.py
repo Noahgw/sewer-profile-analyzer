@@ -17,6 +17,10 @@ import sys
 import io
 import zipfile
 import json
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.patches import FancyArrowPatch
+import numpy as np
 from streamlit_folium import st_folium
 from shapely.geometry import box as shapely_box
 
@@ -171,6 +175,193 @@ def render_metric_bar(issues, stats):
     html += f'<div class="metric-card medium"><div class="value">{issue_types}</div><div class="label">Issue Types</div></div>'
     html += '</div>'
     st.markdown(html, unsafe_allow_html=True)
+
+
+def build_profile_figure(selected_ids, network, gdfs, issues):
+    """Build a matplotlib profile view for selected pipes/junctions.
+
+    Shows pipe inverts as sloped lines with diameter indicated,
+    junction rim/invert elevations, and highlights issues.
+    """
+    G = network["graph"]
+
+    # Collect all selected pipe edges and their connected nodes
+    pipe_edges = []
+    for u, v, data in G.edges(data=True):
+        pid = str(data.get("pipe_id", ""))
+        if pid in selected_ids or str(u) in selected_ids or str(v) in selected_ids:
+            pipe_edges.append((u, v, data))
+
+    if not pipe_edges:
+        return None
+
+    # Build ordered chain: try to connect pipes end-to-end
+    node_order = []
+    edge_map = {}  # (u, v) -> data
+    adj_out = {}   # node -> [(next_node, edge_data)]
+    for u, v, data in pipe_edges:
+        edge_map[(u, v)] = data
+        adj_out.setdefault(u, []).append((v, data))
+
+    # Find start node (one with no incoming edge in our selection)
+    all_dst = {v for _, v, _ in pipe_edges}
+    all_src = {u for u, _, _ in pipe_edges}
+    start_candidates = all_src - all_dst
+    if not start_candidates:
+        start_candidates = all_src
+    start = min(start_candidates, key=str)
+
+    # Walk the chain
+    visited = set()
+    current = start
+    ordered_edges = []
+    while current in adj_out and current not in visited:
+        visited.add(current)
+        next_node, edata = adj_out[current][0]
+        ordered_edges.append((current, next_node, edata))
+        current = next_node
+
+    if not ordered_edges:
+        ordered_edges = [(u, v, d) for u, v, d in pipe_edges[:20]]
+
+    # Build profile data
+    stations = []  # cumulative distance
+    cumulative = 0.0
+    profile_nodes = []  # (station, node_id, node_data)
+    profile_pipes = []  # (start_station, end_station, edge_data)
+
+    for i, (u, v, edata) in enumerate(ordered_edges):
+        u_data = G.nodes[u] if hasattr(G, 'nodes') else G._nodes.get(u, {})
+        v_data = G.nodes[v] if hasattr(G, 'nodes') else G._nodes.get(v, {})
+
+        if i == 0:
+            profile_nodes.append((cumulative, str(u), u_data))
+
+        pipe_len = edata.get("length", 100) or 100
+        end_station = cumulative + float(pipe_len)
+        profile_pipes.append((cumulative, end_station, edata))
+        profile_nodes.append((end_station, str(v), v_data))
+        cumulative = end_station
+
+    # Build issue lookup by feature_id
+    issue_map = {}
+    for iss in issues:
+        fid = str(iss.feature_id)
+        issue_map.setdefault(fid, []).append(iss)
+
+    # ── Plot ──
+    fig, ax = plt.subplots(figsize=(14, 5))
+    fig.patch.set_facecolor("#0e1117")
+    ax.set_facecolor("#0e1117")
+
+    # Draw pipes as sloped bands showing diameter
+    for start_sta, end_sta, edata in profile_pipes:
+        us_inv = edata.get("us_invert")
+        ds_inv = edata.get("ds_invert")
+        diameter_in = edata.get("diameter")
+        pid = str(edata.get("pipe_id", ""))
+
+        if us_inv is None or ds_inv is None:
+            continue
+
+        us_inv = float(us_inv)
+        ds_inv = float(ds_inv)
+        dia_ft = float(diameter_in) / 12.0 if diameter_in else 0.5
+
+        # Pipe invert line (bottom of pipe)
+        pipe_issues = issue_map.get(pid, [])
+        has_adverse = any(i.issue_type == "ADVERSE_SLOPE" for i in pipe_issues)
+        has_dia_decrease = any(i.issue_type == "DIAMETER_DECREASE" for i in pipe_issues)
+
+        if has_adverse:
+            color = "#FF4444"
+            lw = 2.5
+        elif has_dia_decrease:
+            color = "#FF8C00"
+            lw = 2.5
+        else:
+            color = "#4A90D9"
+            lw = 1.5
+
+        # Draw pipe as a band (invert to crown)
+        xs = [start_sta, end_sta]
+        inverts = [us_inv, ds_inv]
+        crowns = [us_inv + dia_ft, ds_inv + dia_ft]
+
+        ax.fill_between(xs, inverts, crowns, alpha=0.2, color=color)
+        ax.plot(xs, inverts, color=color, linewidth=lw, solid_capstyle="round")
+        ax.plot(xs, crowns, color=color, linewidth=0.8, linestyle="--", alpha=0.5)
+
+        # Label pipe
+        mid_x = (start_sta + end_sta) / 2
+        mid_y = (us_inv + ds_inv) / 2 + dia_ft + 0.3
+        label = f'{pid}'
+        if diameter_in:
+            label += f'\n{diameter_in}"'
+        slope = edata.get("slope")
+        if slope is not None:
+            label += f"\n{float(slope):.4f}"
+        elif us_inv and ds_inv and (end_sta - start_sta) > 0:
+            calc_slope = (us_inv - ds_inv) / (end_sta - start_sta)
+            label += f"\n{calc_slope:.4f}"
+
+        ax.text(mid_x, mid_y, label, ha="center", va="bottom",
+                fontsize=7, color="#cccccc", alpha=0.9)
+
+    # Draw junction markers
+    for sta, nid, ndata in profile_nodes:
+        rim = ndata.get("rim_elev")
+        inv = ndata.get("invert_elev")
+
+        node_issues = issue_map.get(nid, [])
+        has_depth_issue = any(i.issue_type in ("SHALLOW_STRUCTURE", "DEEP_STRUCTURE")
+                             for i in node_issues)
+        has_mismatch = any(i.issue_type == "INVERT_MISMATCH" for i in node_issues)
+
+        marker_color = "#FF4444" if (has_depth_issue or has_mismatch) else "#00CC66"
+
+        if rim is not None:
+            rim = float(rim)
+            ax.plot(sta, rim, "v", color=marker_color, markersize=8, zorder=5)
+            ax.text(sta, rim + 0.3, f"{rim:.1f}", ha="center", va="bottom",
+                    fontsize=6, color="#aaaaaa")
+
+        if inv is not None:
+            inv = float(inv)
+            ax.plot(sta, inv, "^", color=marker_color, markersize=8, zorder=5)
+            ax.text(sta, inv - 0.5, f"{inv:.1f}", ha="center", va="top",
+                    fontsize=6, color="#aaaaaa")
+
+        # Draw vertical structure line
+        if rim is not None and inv is not None:
+            line_color = "#FF4444" if (has_depth_issue or has_mismatch) else "#555555"
+            ax.plot([sta, sta], [inv, rim], color=line_color,
+                    linewidth=1.5, linestyle="-", alpha=0.6)
+
+        # Node label
+        label_y = (float(rim) if rim else float(inv)) if (rim or inv) else 0
+        ax.text(sta, label_y + 0.8, nid, ha="center", va="bottom",
+                fontsize=7, color="#dddddd", fontweight="bold", rotation=45)
+
+    # Styling
+    ax.set_xlabel("Station (ft)", color="#aaaaaa", fontsize=10)
+    ax.set_ylabel("Elevation (ft)", color="#aaaaaa", fontsize=10)
+    ax.tick_params(colors="#888888", labelsize=8)
+    ax.grid(True, alpha=0.15, color="#555555")
+    for spine in ax.spines.values():
+        spine.set_color("#333333")
+
+    # Legend
+    legend_items = [
+        mpatches.Patch(color="#4A90D9", alpha=0.4, label="Pipe (normal)"),
+        mpatches.Patch(color="#FF4444", alpha=0.4, label="Adverse slope"),
+        mpatches.Patch(color="#FF8C00", alpha=0.4, label="Diameter decrease"),
+    ]
+    ax.legend(handles=legend_items, loc="upper right", fontsize=7,
+              facecolor="#1a1a2e", edgecolor="#333333", labelcolor="#cccccc")
+
+    fig.tight_layout()
+    return fig
 
 
 def render_issues_summary(issues):
@@ -738,9 +929,9 @@ else:
                 unsafe_allow_html=True,
             )
 
-    # ── Below map: Tabs for Issues, Pipe Data, Junction Data, Network Info ──
-    tab_issues, tab_pipes, tab_junctions, tab_network = st.tabs([
-        "📋 Issue Details", "🔵 Pipes", "🟢 Junctions", "🔍 Network Info"
+    # ── Below map: Tabs for Issues, Profile, Pipe Data, Junction Data, Network Info ──
+    tab_issues, tab_profile, tab_pipes, tab_junctions, tab_network = st.tabs([
+        "📋 Issue Details", "📐 Profile View", "🔵 Pipes", "🟢 Junctions", "🔍 Network Info"
     ])
 
     with tab_issues:
@@ -800,6 +991,19 @@ else:
         else:
             st.session_state["selected_feature_ids"] = set()
             st.success("No issues match the current filters.")
+
+    with tab_profile:
+        map_sel = st.session_state.get("map_selection", set())
+        if map_sel:
+            fig = build_profile_figure(map_sel, network, gdfs, filtered_issues)
+            if fig:
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
+            else:
+                st.info("No pipe data found for the selected features.")
+        else:
+            st.info("Select features on the map to view their profile. "
+                    "Enable **Select on Map** in the sidebar, then click pipes or use box-select.")
 
     # ── Map selection drives table filtering (ArcGIS Pro behavior) ──
     map_selection = st.session_state.get("map_selection", set())
