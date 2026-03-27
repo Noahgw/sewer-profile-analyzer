@@ -555,7 +555,7 @@ else:
                         st.session_state["map_selection"] = sel
                         st.rerun()
 
-        # ── Handle clicks: single = inspect, double = toggle selection ──
+        # ── Handle clicks ──
         if map_result:
             click_data = map_result.get("last_object_clicked")
             prev_click = st.session_state.get("_prev_map_click")
@@ -564,12 +564,19 @@ else:
                 tooltip = map_result.get("last_object_clicked_tooltip")
                 if tooltip:
                     fid = tooltip.split(": ", 1)[1] if ": " in tooltip else tooltip
-                    now = time.time()
-                    prev_fid = st.session_state.get("_prev_click_fid")
-                    prev_time = st.session_state.get("_prev_click_time", 0.0)
 
-                    # ── Click: inspect feature ──
-                    st.session_state["inspected_feature"] = fid
+                    if st.session_state.get("select_on_map", False):
+                        # ── Select mode: add/remove from selection ──
+                        sel = st.session_state.get("map_selection", set())
+                        action = st.session_state.get("selection_action", "Add to Selection")
+                        if action == "Add to Selection":
+                            sel.add(fid)
+                        else:
+                            sel.discard(fid)
+                        st.session_state["map_selection"] = sel
+                    else:
+                        # ── Inspect mode: show feature details ──
+                        st.session_state["inspected_feature"] = fid
                     st.rerun()
 
     with detail_col:
