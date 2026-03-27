@@ -270,6 +270,7 @@ def build_base_map(pipes_gdf=None, junctions_gdf=None, pumps_gdf=None, storage_g
                     )
                     arrow_size = max(min(total_len * 0.15, 0.0005), 0.00005)
                     tri = _arrow_triangle(mid_lat, mid_lon, bearing, arrow_size)
+                    pipe_id = str(row.get(pipes_wgs.columns[0], idx))
                     folium.Polygon(
                         locations=tri,
                         color="#3a78b5",
@@ -277,6 +278,7 @@ def build_base_map(pipes_gdf=None, junctions_gdf=None, pumps_gdf=None, storage_g
                         fill=True,
                         fill_color="#3a78b5",
                         fill_opacity=0.8,
+                        tooltip=pipe_id,
                     ).add_to(pipes_layer)
 
         pipes_layer.add_to(m)
