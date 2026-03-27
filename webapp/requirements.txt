@@ -1,0 +1,11 @@
+streamlit>=1.30.0
+geopandas>=0.14.0
+folium>=0.15.0
+streamlit-folium>=0.18.0
+networkx>=3.2
+shapely>=2.0
+pyproj>=3.6
+fiona>=1.9
+openpyxl>=3.1.0
+pandas>=2.0
+matplotlib>=3.8

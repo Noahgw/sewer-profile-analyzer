@@ -1,0 +1,23 @@
+# Data files (users upload their own)
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Docs (not needed for deployment)
+docs/
+
+# ArcGIS toolbox (not used by web app)
+SewerProfileAnalyzer.pyt

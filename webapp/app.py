@@ -1,0 +1,881 @@
+"""
+Sewer Profile Analyzer — Streamlit Web App
+
+GIS-style interface: map-centered workspace with sidebar controls
+and contextual issue details.
+
+Run with: streamlit run app.py
+"""
+
+import streamlit as st
+import pandas as pd
+import geopandas as gpd
+import time
+import tempfile
+import os
+import sys
+import io
+import zipfile
+import json
+from streamlit_folium import st_folium
+from shapely.geometry import box as shapely_box
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from webapp.ingest_gpd import (
+    auto_detect_fields, get_required_fields, load_field_config,
+    ingest_gdf, read_shapefile_from_upload
+)
+from src.network_builder import build_network
+from src.profile_analyzer import run_full_analysis, trace_profile
+from webapp.map_builder import (
+    build_base_map, add_issues_to_map, add_selection_layer,
+    ISSUE_COLORS, ISSUE_DISPLAY_NAMES, get_feature_bounds
+)
+
+# ── Page Config ──
+st.set_page_config(
+    page_title="Sewer Profile Analyzer",
+    page_icon="🔧",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ── Custom CSS for GIS-style layout ──
+st.markdown("""
+<style>
+    /* Reduce default padding for map-first layout */
+    .block-container { padding-top: 2.5rem; padding-bottom: 0; }
+
+    /* Hide the default Streamlit header bar to reclaim space */
+    header[data-testid="stHeader"] {
+        height: 2rem;
+    }
+
+    /* Metric cards row */
+    .metric-bar {
+        display: flex; gap: 12px; margin-bottom: 12px; margin-top: 0.25rem;
+    }
+    .metric-card {
+        flex: 1; background: #1a1a2e; color: #fff; border-radius: 8px;
+        padding: 12px 16px; text-align: center;
+    }
+    .metric-card .value { font-size: 28px; font-weight: 700; }
+    .metric-card .label { font-size: 11px; text-transform: uppercase;
+        letter-spacing: 1px; color: #aaa; margin-top: 2px; }
+    .metric-card.high { border-bottom: 3px solid #FF4444; }
+    .metric-card.medium { border-bottom: 3px solid #FF8C00; }
+    .metric-card.low { border-bottom: 3px solid #1E90FF; }
+    .metric-card.info { border-bottom: 3px solid #4A90D9; }
+
+    /* Issue summary table styling */
+    .issue-row {
+        display: flex; align-items: center; padding: 8px 12px;
+        border-bottom: 1px solid #eee; font-size: 13px;
+    }
+    .issue-row:hover { background: #f5f7ff; }
+    .sev-badge {
+        display: inline-block; padding: 2px 8px; border-radius: 4px;
+        font-size: 11px; font-weight: 600; margin-right: 10px; min-width: 55px;
+        text-align: center;
+    }
+    .sev-HIGH { background: #FFE0E0; color: #CC0000; }
+    .sev-MEDIUM { background: #FFF3E0; color: #CC6600; }
+    .sev-LOW { background: #E0F0FF; color: #0066CC; }
+
+    /* Hide streamlit footer and menu for cleaner look */
+    #MainMenu { visibility: hidden; }
+    footer { visibility: hidden; }
+
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background: #f8f9fb;
+    }
+
+</style>
+""", unsafe_allow_html=True)
+
+
+# ── Selection & Inspection State ──
+if "map_selection" not in st.session_state:
+    st.session_state["map_selection"] = set()
+if "_prev_map_click" not in st.session_state:
+    st.session_state["_prev_map_click"] = None
+if "_map_render_key" not in st.session_state:
+    st.session_state["_map_render_key"] = 0
+if "_prev_click_fid" not in st.session_state:
+    st.session_state["_prev_click_fid"] = None
+if "_prev_click_time" not in st.session_state:
+    st.session_state["_prev_click_time"] = 0.0
+if "inspected_feature" not in st.session_state:
+    st.session_state["inspected_feature"] = None
+if "_last_processed_drawing" not in st.session_state:
+    st.session_state["_last_processed_drawing"] = None
+if "box_select_mode" not in st.session_state:
+    st.session_state["box_select_mode"] = False
+if "box_select_corner1" not in st.session_state:
+    st.session_state["box_select_corner1"] = None
+
+
+# ════════════════════════════════════════════════════════════
+# HELPER FUNCTIONS
+# ════════════════════════════════════════════════════════════
+
+def upload_shapefile(label, key):
+    files = st.file_uploader(
+        label,
+        type=["shp", "shx", "dbf", "prj", "cpg", "zip"],
+        accept_multiple_files=True,
+        key=key,
+        help="Upload all shapefile components (.shp, .shx, .dbf, .prj) or a single .zip"
+    )
+    return files
+
+
+def field_mapping_ui(gdf, feature_type, key_prefix):
+    config = load_field_config()
+    source_fields = [c for c in gdf.columns if c != "geometry"]
+    auto_mapping = auto_detect_fields(source_fields, feature_type, config)
+    required = get_required_fields(feature_type)
+
+    final_mapping = {}
+    cols = st.columns(2)
+    for i, (internal, auto_val) in enumerate(auto_mapping.items()):
+        col = cols[i % 2]
+        options = ["(unmapped)"] + source_fields
+        default_idx = 0
+        if auto_val and auto_val in source_fields:
+            default_idx = source_fields.index(auto_val) + 1
+        is_req = internal in required
+        label = f"{'* ' if is_req else ''}{internal}"
+        with col:
+            selected = st.selectbox(
+                label, options, index=default_idx,
+                key=f"{key_prefix}_{internal}",
+            )
+            final_mapping[internal] = selected if selected != "(unmapped)" else None
+    return final_mapping
+
+
+def render_metric_bar(issues, stats):
+    """Render the compact metric cards bar."""
+    total_issues = len(issues)
+    # Count distinct issue types
+    issue_types = len(set(i.issue_type for i in issues)) if issues else 0
+
+    html = '<div class="metric-bar">'
+    html += f'<div class="metric-card info"><div class="value">{stats["total_edges"]}</div><div class="label">Pipes</div></div>'
+    html += f'<div class="metric-card info"><div class="value">{stats["total_nodes"]}</div><div class="label">Nodes</div></div>'
+    html += f'<div class="metric-card info"><div class="value">{stats["connected_components"]}</div><div class="label">Components</div></div>'
+    html += f'<div class="metric-card high"><div class="value">{total_issues}</div><div class="label">Issues Found</div></div>'
+    html += f'<div class="metric-card medium"><div class="value">{issue_types}</div><div class="label">Issue Types</div></div>'
+    html += '</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_issues_summary(issues):
+    """Render a clean issue summary grouped by type."""
+    if not issues:
+        st.success("No issues detected. Your network is clean.")
+        return
+
+    # Group by type
+    by_type = {}
+    for issue in issues:
+        key = issue.issue_type
+        if key not in by_type:
+            by_type[key] = []
+        by_type[key].append(issue)
+
+    html = ""
+    for itype, issue_list in sorted(by_type.items(), key=lambda x: -len(x[1])):
+        count = len(issue_list)
+        color = ISSUE_COLORS.get(itype, "#999")
+        display_name = itype.replace("_", " ").title()
+
+        html += f"""<div class="issue-row">
+            <span style="color:{color};font-size:16px;margin-right:8px;">●</span>
+            <span style="flex:1;font-weight:500;">{display_name}</span>
+            <span style="font-weight:700;font-size:16px;">{count}</span>
+        </div>"""
+
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# ════════════════════════════════════════════════════════════
+# SIDEBAR — Upload, Field Mapping, Settings, Run
+# ════════════════════════════════════════════════════════════
+
+with st.sidebar:
+    st.title("Sewer Profile Analyzer")
+    st.caption("Network QA/QC Tool")
+
+    # ── Upload Section ──
+    with st.expander("📁 Upload Data", expanded="analysis" not in st.session_state):
+        pipes_files = upload_shapefile("Pipes *", "pipes_upload")
+        junctions_files = upload_shapefile("Junctions *", "junctions_upload")
+        pumps_files = upload_shapefile("Pumps", "pumps_upload")
+        storage_files = upload_shapefile("Storage", "storage_upload")
+
+    # Process uploads
+    gdfs = {}
+    for ftype, files, required in [
+        ("pipes", pipes_files, True),
+        ("junctions", junctions_files, True),
+        ("pumps", pumps_files, False),
+        ("storage", storage_files, False),
+    ]:
+        if files:
+            try:
+                gdf = read_shapefile_from_upload(files)
+                gdfs[ftype] = gdf
+            except Exception as e:
+                st.sidebar.error(f"{ftype}: {e}")
+
+    # Show loaded counts
+    if gdfs:
+        loaded = ", ".join(f"{k}: {len(v)}" for k, v in gdfs.items())
+        st.caption(f"Loaded: {loaded}")
+
+    # ── Field Mapping ──
+    mappings = {}
+    if gdfs:
+        with st.expander("🔗 Field Mapping", expanded="analysis" not in st.session_state):
+            for ftype, gdf in gdfs.items():
+                st.markdown(f"**{ftype.title()}**")
+
+                # Quick data preview toggle
+                if st.checkbox(f"Preview {ftype} data", key=f"preview_{ftype}"):
+                    display_gdf = gdf.drop(columns=["geometry"], errors="ignore")
+                    st.dataframe(display_gdf.head(10), height=200, width="stretch")
+
+                mappings[ftype] = field_mapping_ui(gdf, ftype, ftype)
+                st.markdown("---")
+
+    # ── Analysis Settings ──
+    with st.expander("⚙️ Settings"):
+        snap_tolerance = st.slider("Snap Tolerance", 0.1, 20.0, 1.0, 0.1)
+        invert_tolerance = st.slider("Invert Mismatch Tolerance (ft)", 0.01, 1.0, 0.02, 0.01)
+        min_depth = st.slider("Min Structure Depth (ft)", 0.5, 5.0, 2.0, 0.5)
+        max_depth = st.slider("Max Structure Depth (ft)", 15.0, 50.0, 30.0, 1.0)
+
+    # ── Run Button ──
+    st.markdown("---")
+    can_run = "pipes" in gdfs and "junctions" in gdfs
+    if not can_run:
+        st.info("Upload Pipes & Junctions to begin.")
+
+    if can_run and st.button("▶ Run Analysis", type="primary", width="stretch"):
+        with st.spinner("Analyzing..."):
+            ingestion = {}
+            for ftype, gdf in gdfs.items():
+                overrides = mappings.get(ftype, {})
+                result = ingest_gdf(gdf, ftype, overrides=overrides)
+                ingestion[ftype] = result
+
+            network = build_network(
+                ingestion["pipes"]["records"],
+                ingestion["junctions"]["records"],
+                ingestion.get("pumps", {}).get("records"),
+                ingestion.get("storage", {}).get("records"),
+                snap_tolerance=snap_tolerance,
+            )
+
+            thresholds = {
+                "invert_mismatch_tolerance_ft": invert_tolerance,
+                "min_structure_depth_ft": min_depth,
+                "max_structure_depth_ft": max_depth,
+                "adverse_slope_severity_threshold": -0.01,
+            }
+            analysis = run_full_analysis(network, thresholds)
+
+            st.session_state["ingestion"] = ingestion
+            st.session_state["network"] = network
+            st.session_state["analysis"] = analysis
+            st.session_state["gdfs"] = gdfs
+            st.session_state["mappings"] = mappings
+            st.session_state["snap_tolerance"] = snap_tolerance
+            st.session_state["thresholds"] = thresholds
+
+        st.rerun()
+
+    # ── Layer Visibility (only after analysis) ──
+    if "analysis" in st.session_state:
+        st.markdown("---")
+        with st.expander("🗺️ Layer Visibility", expanded=True):
+            st.caption("Network Layers")
+            vis_pipes = st.checkbox("Pipes", value=True, key="vis_pipes")
+            vis_junctions = st.checkbox("Junctions", value=True, key="vis_junctions")
+            vis_pumps = st.checkbox("Pumps", value=True, key="vis_pumps")
+            vis_storage = st.checkbox("Storage", value=True, key="vis_storage")
+
+            # Issue layers — only show types that exist
+            analysis_ref = st.session_state["analysis"]
+            active_issue_types = sorted(set(i.issue_type for i in analysis_ref["issues"]))
+            if active_issue_types:
+                st.caption("Issue Layers")
+                for itype in active_issue_types:
+                    display = ISSUE_DISPLAY_NAMES.get(itype, itype.replace("_", " ").title())
+                    color = ISSUE_COLORS.get(itype, "#999")
+                    st.checkbox(
+                        display,
+                        value=True,
+                        key=f"vis_issue_{itype}",
+                    )
+
+        # ── Selection Tools (ArcGIS Pro-style) ──
+        with st.expander("🔷 Selection", expanded=True):
+            st.radio(
+                "Mode", ["Add to Selection", "Remove from Selection"],
+                key="selection_action", horizontal=True,
+                label_visibility="collapsed",
+            )
+
+            # ── Selection count & actions ──
+            map_sel = st.session_state.get("map_selection", set())
+            gdfs_ref = st.session_state.get("gdfs", {})
+            if map_sel:
+                pipe_sel_count = 0
+                junc_sel_count = 0
+                if "pipes" in gdfs_ref:
+                    pipe_id_col = gdfs_ref["pipes"].columns[0]
+                    pipe_sel_count = len(
+                        map_sel & set(gdfs_ref["pipes"][pipe_id_col].astype(str))
+                    )
+                if "junctions" in gdfs_ref:
+                    junc_id_col = gdfs_ref["junctions"].columns[0]
+                    junc_sel_count = len(
+                        map_sel & set(gdfs_ref["junctions"][junc_id_col].astype(str))
+                    )
+                st.markdown(f"**{len(map_sel)}** feature(s) selected")
+                if pipe_sel_count:
+                    st.caption(f"Pipes: {pipe_sel_count}")
+                if junc_sel_count:
+                    st.caption(f"Junctions: {junc_sel_count}")
+
+                sel_c1, sel_c2 = st.columns(2)
+                with sel_c1:
+                    if st.button("✕ Clear", key="clear_sel", use_container_width=True):
+                        st.session_state["map_selection"] = set()
+                        st.session_state["_prev_map_click"] = None
+                        st.session_state["_last_processed_drawing"] = None
+                        st.rerun()
+                with sel_c2:
+                    if st.button("🔍 Zoom", key="zoom_sel", use_container_width=True):
+                        bounds = get_feature_bounds(
+                            list(map_sel),
+                            pipes_gdf=gdfs_ref.get("pipes"),
+                            junctions_gdf=gdfs_ref.get("junctions"),
+                            network_result=st.session_state.get("network"),
+                        )
+                        if bounds:
+                            st.session_state["zoom_bounds"] = bounds
+                            st.session_state["_map_render_key"] += 1
+                            st.rerun()
+
+        # ── Filters ──
+        st.markdown("---")
+        st.markdown("**Filters**")
+        all_types = list(set(i.issue_type for i in analysis_ref["issues"]))
+        type_filter = st.multiselect(
+            "Issue Type", all_types, default=all_types, key="filter_type"
+        )
+
+        # Export
+        st.markdown("---")
+        issues_data = [i.to_dict() for i in analysis_ref["issues"]]
+        if issues_data:
+            issues_df_export = pd.DataFrame(issues_data)
+            issues_df_export = issues_df_export.drop(columns=["coordinates"], errors="ignore")
+            if "details" in issues_df_export.columns:
+                issues_df_export["details"] = issues_df_export["details"].apply(
+                    lambda x: json.dumps(x) if isinstance(x, dict) else str(x)
+                )
+            csv_buffer = io.StringIO()
+            issues_df_export.to_csv(csv_buffer, index=False)
+            st.download_button(
+                "📥 Export Issues CSV", csv_buffer.getvalue(),
+                "sewer_issues.csv", "text/csv", width="stretch",
+            )
+
+
+# ════════════════════════════════════════════════════════════
+# MAIN WORKSPACE — Map + Issues
+# ════════════════════════════════════════════════════════════
+
+if "analysis" not in st.session_state:
+    # Landing state
+    st.markdown("## Sewer Profile Analyzer")
+    st.markdown(
+        "Upload your sewer network shapefiles using the sidebar, "
+        "map the fields, and click **Run Analysis** to get started."
+    )
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("#### 1. Upload")
+        st.markdown("Add your Pipes and Junctions shapefiles (+ optional Pumps/Storage).")
+    with col2:
+        st.markdown("#### 2. Map Fields")
+        st.markdown("Verify auto-detected field mappings match your data schema.")
+    with col3:
+        st.markdown("#### 3. Analyze")
+        st.markdown("Run the analysis to detect profile issues across your network.")
+
+else:
+    analysis = st.session_state["analysis"]
+    network = st.session_state["network"]
+    gdfs = st.session_state["gdfs"]
+    stats = network["stats"]
+    issues = analysis["issues"]
+
+    # Apply sidebar filters (issue type only, severity removed)
+    type_filter = st.session_state.get("filter_type", [])
+    filtered_issues = [
+        i for i in issues
+        if i.issue_type in type_filter
+    ]
+
+    # ── Build visible_layers dict from sidebar checkboxes ──
+    visible_layers = {
+        "Pipes": st.session_state.get("vis_pipes", True),
+        "Junctions": st.session_state.get("vis_junctions", True),
+        "Pumps": st.session_state.get("vis_pumps", True),
+        "Storage": st.session_state.get("vis_storage", True),
+    }
+    # Add issue layer visibility
+    for itype in set(i.issue_type for i in filtered_issues):
+        display = ISSUE_DISPLAY_NAMES.get(itype, itype.replace("_", " ").title())
+        visible_layers[display] = st.session_state.get(f"vis_issue_{itype}", True)
+
+    # ── Retrieve zoom bounds (set by Zoom to Selection / Zoom to Issue) ──
+    zoom_bounds = st.session_state.get("zoom_bounds", None)
+
+    # ── Metric Bar ──
+    render_metric_bar(filtered_issues, stats)
+
+    # ── Main workspace: Map + Issue Summary side by side ──
+    map_col, detail_col = st.columns([3, 1])
+
+    with map_col:
+        # Build map with visibility state and zoom
+        m = build_base_map(
+            pipes_gdf=gdfs.get("pipes"),
+            junctions_gdf=gdfs.get("junctions"),
+            pumps_gdf=gdfs.get("pumps"),
+            storage_gdf=gdfs.get("storage"),
+            visible_layers=visible_layers,
+            zoom_bounds=zoom_bounds,
+            network_result=network,
+        )
+        m = add_issues_to_map(
+            m, filtered_issues,
+            pipes_gdf=gdfs.get("pipes"),
+            junctions_gdf=gdfs.get("junctions"),
+            network_result=network,
+            visible_layers=visible_layers,
+            add_layer_control=False,
+        )
+
+        # Add selection highlights (ArcGIS Pro-style cyan)
+        map_selection = st.session_state.get("map_selection", set())
+        m = add_selection_layer(m, map_selection, gdfs.get("pipes"), gdfs.get("junctions"))
+
+        # ── Box Select: Draw plugin with rectangle tool always available ──
+        from folium.plugins import Draw
+        Draw(
+            export=False,
+            draw_options={
+                "rectangle": {
+                    "shapeOptions": {
+                        "color": "#00FFFF",
+                        "weight": 2,
+                        "fillColor": "#00FFFF",
+                        "fillOpacity": 0.15,
+                    },
+                },
+                "polyline": False,
+                "polygon": False,
+                "circle": False,
+                "marker": False,
+                "circlemarker": False,
+            },
+            edit_options={"edit": False, "remove": False},
+        ).add_to(m)
+
+        # Render interactive map
+        render_key = st.session_state.get("_map_render_key", 0)
+        map_result = st_folium(
+            m, height=620, use_container_width=True,
+            key=f"main_map_{render_key}",
+        )
+
+        # ── Process drawn rectangles (Box Select) ──
+        if map_result:
+            drawing = map_result.get("last_active_drawing")
+            if drawing and drawing != st.session_state.get("_last_processed_drawing"):
+                geom = drawing.get("geometry", {})
+                if geom.get("type") == "Polygon":
+                    st.session_state["_last_processed_drawing"] = drawing
+                    coords = geom["coordinates"][0]  # GeoJSON [lon, lat]
+                    lons = [c[0] for c in coords]
+                    lats = [c[1] for c in coords]
+                    bbox = shapely_box(min(lons), min(lats), max(lons), max(lats))
+
+                    found_ids = set()
+                    if "pipes" in gdfs:
+                        p_gdf = gdfs["pipes"]
+                        if p_gdf.crs is not None and p_gdf.crs.to_epsg() != 4326:
+                            p_gdf = p_gdf.to_crs(epsg=4326)
+                        elif p_gdf.crs is None:
+                            p_gdf = p_gdf.set_crs(epsg=4326)
+                        pid_col = p_gdf.columns[0]
+                        for _, row in p_gdf.iterrows():
+                            if row.geometry and not row.geometry.is_empty and bbox.intersects(row.geometry):
+                                found_ids.add(str(row[pid_col]))
+                    if "junctions" in gdfs:
+                        j_gdf = gdfs["junctions"]
+                        if j_gdf.crs is not None and j_gdf.crs.to_epsg() != 4326:
+                            j_gdf = j_gdf.to_crs(epsg=4326)
+                        elif j_gdf.crs is None:
+                            j_gdf = j_gdf.set_crs(epsg=4326)
+                        jid_col = j_gdf.columns[0]
+                        for _, row in j_gdf.iterrows():
+                            if row.geometry and not row.geometry.is_empty and bbox.intersects(row.geometry):
+                                found_ids.add(str(row[jid_col]))
+
+                    if found_ids:
+                        sel = st.session_state.get("map_selection", set())
+                        action = st.session_state.get("selection_action", "Add to Selection")
+                        if action == "Add to Selection":
+                            sel |= found_ids
+                        else:
+                            sel -= found_ids
+                        st.session_state["map_selection"] = sel
+                        st.rerun()
+
+        # ── Handle clicks: single = inspect, double = toggle selection ──
+        if map_result:
+            click_data = map_result.get("last_object_clicked")
+            prev_click = st.session_state.get("_prev_map_click")
+            if click_data and click_data != prev_click:
+                st.session_state["_prev_map_click"] = click_data
+                tooltip = map_result.get("last_object_clicked_tooltip")
+                if tooltip:
+                    fid = tooltip.split(": ", 1)[1] if ": " in tooltip else tooltip
+                    now = time.time()
+                    prev_fid = st.session_state.get("_prev_click_fid")
+                    prev_time = st.session_state.get("_prev_click_time", 0.0)
+
+                    if fid == prev_fid and (now - prev_time) < 1.5:
+                        # ── Double-click: toggle selection ──
+                        sel = st.session_state.get("map_selection", set())
+                        if fid in sel:
+                            sel.discard(fid)
+                        else:
+                            sel.add(fid)
+                        st.session_state["map_selection"] = sel
+                        st.session_state["_prev_click_fid"] = None
+                        st.rerun()
+                    else:
+                        # ── Single click: inspect feature ──
+                        st.session_state["_prev_click_fid"] = fid
+                        st.session_state["_prev_click_time"] = now
+                        st.session_state["inspected_feature"] = fid
+                        st.rerun()
+
+    with detail_col:
+        inspected_fid = st.session_state.get("inspected_feature")
+        map_sel = st.session_state.get("map_selection", set())
+
+        if inspected_fid:
+            # ── Feature Inspector Panel ──
+            feature_type = None
+            feature_row = None
+
+            # Look up in pipes
+            if "pipes" in gdfs:
+                pid_col = gdfs["pipes"].columns[0]
+                match = gdfs["pipes"][gdfs["pipes"][pid_col].astype(str) == str(inspected_fid)]
+                if len(match) > 0:
+                    feature_type = "pipes"
+                    feature_row = match.iloc[0]
+
+            # Look up in junctions
+            if feature_row is None and "junctions" in gdfs:
+                jid_col = gdfs["junctions"].columns[0]
+                match = gdfs["junctions"][gdfs["junctions"][jid_col].astype(str) == str(inspected_fid)]
+                if len(match) > 0:
+                    feature_type = "junctions"
+                    feature_row = match.iloc[0]
+
+            # Header with selection indicator
+            type_label = "Pipe" if feature_type == "pipes" else "Junction" if feature_type == "junctions" else "Feature"
+            type_icon = "🔵" if feature_type == "pipes" else "🟢" if feature_type == "junctions" else "📍"
+            in_sel = str(inspected_fid) in map_sel
+            sel_badge = ' <span style="background:#00FFFF;color:#000;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;">SELECTED</span>' if in_sel else ""
+
+            st.markdown(
+                f"{type_icon} **{type_label}**: {inspected_fid}{sel_badge}",
+                unsafe_allow_html=True,
+            )
+
+            if feature_row is not None:
+                # ── Mapped fields ──
+                ftype_mappings = st.session_state.get("mappings", {}).get(feature_type, {})
+                mapped_items = []
+                for internal_name, source_col in ftype_mappings.items():
+                    if source_col and source_col in feature_row.index:
+                        val = feature_row[source_col]
+                        if pd.notna(val):
+                            mapped_items.append((internal_name, val))
+
+                if mapped_items:
+                    st.markdown("**Mapped Fields**")
+                    for field_name, val in mapped_items:
+                        st.markdown(
+                            f'<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:13px;border-bottom:1px solid #eee;">'
+                            f'<span style="color:#666;">{field_name}</span>'
+                            f'<span style="font-weight:500;">{val}</span></div>',
+                            unsafe_allow_html=True,
+                        )
+
+                # ── All attributes (collapsible) ──
+                with st.expander("All Attributes"):
+                    for col in feature_row.index:
+                        if col != "geometry":
+                            val = feature_row[col]
+                            if pd.notna(val):
+                                st.markdown(
+                                    f'<span style="color:#888;font-size:12px;">{col}:</span> '
+                                    f'<span style="font-size:12px;">{val}</span>',
+                                    unsafe_allow_html=True,
+                                )
+            else:
+                st.caption("Feature not found in loaded data.")
+
+            # ── Issues for this feature ──
+            feature_issues = [
+                i for i in filtered_issues
+                if str(i.feature_id) == str(inspected_fid)
+            ]
+            st.markdown("---")
+            if feature_issues:
+                st.markdown(f"**Issues ({len(feature_issues)})**")
+                for issue in feature_issues:
+                    color = ISSUE_COLORS.get(issue.issue_type, "#999")
+                    display_name = ISSUE_DISPLAY_NAMES.get(issue.issue_type, issue.issue_type)
+                    st.markdown(
+                        f'<div style="margin:6px 0 2px 0;">'
+                        f'<span style="color:{color};font-size:14px;">●</span> '
+                        f'<b>{display_name}</b> '
+                        f'<span style="font-size:11px;color:#888;">({issue.severity})</span>'
+                        f'</div>'
+                        f'<div style="font-size:12px;color:#555;margin-left:18px;margin-bottom:6px;">'
+                        f'{issue.message}</div>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.success("No issues for this feature.", icon="✅")
+
+            # ── Action buttons ──
+            st.markdown("---")
+            btn_c1, btn_c2 = st.columns(2)
+            with btn_c1:
+                if st.button("🔍 Zoom", key="zoom_inspected", use_container_width=True):
+                    bounds = get_feature_bounds(
+                        [inspected_fid],
+                        pipes_gdf=gdfs.get("pipes"),
+                        junctions_gdf=gdfs.get("junctions"),
+                        network_result=network,
+                    )
+                    if bounds:
+                        st.session_state["zoom_bounds"] = bounds
+                        st.session_state["_map_render_key"] += 1
+                        st.rerun()
+            with btn_c2:
+                sel_label = "Remove" if in_sel else "Select"
+                if st.button(f"{'✕' if in_sel else '＋'} {sel_label}", key="toggle_inspected_sel", use_container_width=True):
+                    sel = st.session_state.get("map_selection", set())
+                    if in_sel:
+                        sel.discard(str(inspected_fid))
+                    else:
+                        sel.add(str(inspected_fid))
+                    st.session_state["map_selection"] = sel
+                    st.rerun()
+
+        else:
+            # ── Default: Issues Summary ──
+            st.markdown("#### Issues Summary")
+            render_issues_summary(filtered_issues)
+
+            # ── Zoom to Issue selector ──
+            if filtered_issues:
+                st.markdown("---")
+                issue_options = ["(none)"] + [
+                    f"{i.feature_id} — {i.issue_type.replace('_', ' ').title()}"
+                    for i in filtered_issues
+                ]
+                zoom_pick = st.selectbox(
+                    "Zoom to Issue", issue_options, index=0, key="zoom_issue_pick"
+                )
+                if zoom_pick != "(none)":
+                    picked_fid = zoom_pick.split(" — ")[0]
+                    bounds = get_feature_bounds(
+                        [picked_fid],
+                        pipes_gdf=gdfs.get("pipes"),
+                        junctions_gdf=gdfs.get("junctions"),
+                        network_result=network,
+                    )
+                    if bounds and bounds != st.session_state.get("zoom_bounds"):
+                        st.session_state["zoom_bounds"] = bounds
+                        st.session_state["_map_render_key"] += 1
+                        st.rerun()
+                elif st.session_state.get("zoom_bounds") is not None:
+                    st.session_state["zoom_bounds"] = None
+                    st.session_state["_map_render_key"] += 1
+                    st.rerun()
+
+            st.markdown(
+                f"<span style='color:#888;font-size:12px;'>"
+                f"Click a feature on the map to inspect it.<br>"
+                f"{len(filtered_issues)} of {len(issues)} issues</span>",
+                unsafe_allow_html=True,
+            )
+
+    # ── Below map: Tabs for Issues, Pipe Data, Junction Data, Network Info ──
+    tab_issues, tab_pipes, tab_junctions, tab_network = st.tabs([
+        "📋 Issue Details", "🔵 Pipes", "🟢 Junctions", "🔍 Network Info"
+    ])
+
+    with tab_issues:
+        issues_data = [i.to_dict() for i in filtered_issues]
+        if issues_data:
+            issues_df = pd.DataFrame(issues_data)
+            issues_df = issues_df.drop(columns=["details", "coordinates"], errors="ignore")
+
+            # Selectable dataframe for multi-row selection
+            selection = st.dataframe(
+                issues_df,
+                width="stretch",
+                height=350,
+                selection_mode="multi-row",
+                on_select="rerun",
+                key="issues_selection",
+                column_config={
+                    "issue_type": st.column_config.TextColumn("Type", width="medium"),
+                    "feature_id": st.column_config.TextColumn("Feature", width="small"),
+                    "message": st.column_config.TextColumn("Description", width="large"),
+                }
+            )
+
+            # Get selected row indices
+            selected_rows = selection.selection.rows if selection and selection.selection else []
+
+            # Build set of selected feature IDs for cross-tab filtering
+            selected_feature_ids = set()
+            if selected_rows:
+                for row_idx in selected_rows:
+                    if row_idx < len(issues_df):
+                        selected_feature_ids.add(str(issues_df.iloc[row_idx]["feature_id"]))
+            st.session_state["selected_feature_ids"] = selected_feature_ids
+
+            # Selection action bar
+            if selected_rows:
+                sel_col1, sel_col2, sel_col3 = st.columns([1, 1, 2])
+                with sel_col1:
+                    if st.button("🔍 Zoom to Selection", width="stretch"):
+                        bounds = get_feature_bounds(
+                            list(selected_feature_ids),
+                            pipes_gdf=gdfs.get("pipes"),
+                            junctions_gdf=gdfs.get("junctions"),
+                            network_result=network,
+                        )
+                        if bounds:
+                            st.session_state["zoom_bounds"] = bounds
+                            st.session_state["_map_render_key"] += 1
+                            st.rerun()
+                with sel_col2:
+                    if st.button("🔄 Reset Zoom", width="stretch"):
+                        st.session_state["zoom_bounds"] = None
+                        st.session_state["_map_render_key"] += 1
+                        st.rerun()
+                with sel_col3:
+                    st.caption(f"{len(selected_rows)} issue(s) selected")
+        else:
+            st.session_state["selected_feature_ids"] = set()
+            st.success("No issues match the current filters.")
+
+    # ── Map selection drives table filtering (ArcGIS Pro behavior) ──
+    map_selection = st.session_state.get("map_selection", set())
+
+    with tab_pipes:
+        if "pipes" in gdfs:
+            pipes_display = gdfs["pipes"].drop(columns=["geometry"], errors="ignore")
+            total_pipes = len(pipes_display)
+
+            # Auto-filter when map selection is active
+            if map_selection:
+                id_col = pipes_display.columns[0]
+                pipes_display = pipes_display[
+                    pipes_display[id_col].astype(str).isin(map_selection)
+                ]
+                if len(pipes_display) > 0:
+                    st.info(f"Filtered to {len(pipes_display)} of {total_pipes} pipes (map selection)")
+                else:
+                    st.caption(f"No pipes in current selection ({total_pipes} total)")
+
+            st.dataframe(pipes_display, width="stretch", height=400)
+            st.caption(f"{len(pipes_display)} pipes")
+        else:
+            st.info("No pipe data loaded.")
+
+    with tab_junctions:
+        if "junctions" in gdfs:
+            juncs_display = gdfs["junctions"].drop(columns=["geometry"], errors="ignore")
+            total_juncs = len(juncs_display)
+
+            # Auto-filter when map selection is active
+            if map_selection:
+                id_col = juncs_display.columns[0]
+                juncs_display = juncs_display[
+                    juncs_display[id_col].astype(str).isin(map_selection)
+                ]
+                if len(juncs_display) > 0:
+                    st.info(f"Filtered to {len(juncs_display)} of {total_juncs} junctions (map selection)")
+                else:
+                    st.caption(f"No junctions in current selection ({total_juncs} total)")
+
+            st.dataframe(juncs_display, width="stretch", height=400)
+            st.caption(f"{len(juncs_display)} junctions")
+        else:
+            st.info("No junction data loaded.")
+
+    with tab_network:
+        net_c1, net_c2 = st.columns(2)
+        with net_c1:
+            st.markdown("**Network Statistics**")
+            st.markdown(f"- Pipes: **{stats['total_edges']}**")
+            st.markdown(f"- Nodes: **{stats['total_nodes']}**")
+            st.markdown(f"- Connected components: **{stats['connected_components']}**")
+            st.markdown(f"- Largest component: **{stats['largest_component_size']}** nodes")
+            st.markdown(f"- Virtual nodes created: **{stats['virtual_nodes_created']}**")
+
+        with net_c2:
+            st.markdown("**Connectivity**")
+            if stats["source_nodes"]:
+                st.markdown(f"- Source nodes: {', '.join(str(n) for n in stats['source_nodes'][:10])}"
+                            f"{'...' if len(stats['source_nodes']) > 10 else ''}")
+            if stats["dead_end_nodes"]:
+                st.markdown(f"- Dead ends: {', '.join(str(n) for n in stats['dead_end_nodes'][:10])}"
+                            f"{'...' if len(stats['dead_end_nodes']) > 10 else ''}")
+            if stats["orphan_nodes"]:
+                st.markdown(f"- Orphan nodes: {', '.join(str(n) for n in stats['orphan_nodes'][:10])}"
+                            f"{'...' if len(stats['orphan_nodes']) > 10 else ''}")
+            if not stats["dead_end_nodes"] and not stats["orphan_nodes"]:
+                st.markdown("- All nodes properly connected")
+
+            if network.get("snap_log"):
+                with st.expander(f"Snap Log ({len(network['snap_log'])} actions)"):
+                    for entry in network["snap_log"][:50]:
+                        st.text(entry)
