@@ -36,6 +36,10 @@ from webapp.map_builder import (
     build_base_map, add_issues_to_map, add_selection_layer,
     ISSUE_COLORS, ISSUE_DISPLAY_NAMES, get_feature_bounds
 )
+from webapp.fix_toolkit import (
+    LedgerEntry, apply_group, undo_last_group, get_current_value,
+    get_all_edits, ledger_summary, get_strategies, compute_fix,
+)
 
 # ── Page Config ──
 st.set_page_config(
@@ -119,6 +123,10 @@ if "box_select_mode" not in st.session_state:
     st.session_state["box_select_mode"] = False
 if "box_select_corner1" not in st.session_state:
     st.session_state["box_select_corner1"] = None
+if "edit_ledger" not in st.session_state:
+    st.session_state["edit_ledger"] = []
+if "preview_entries" not in st.session_state:
+    st.session_state["preview_entries"] = None
 
 
 # ════════════════════════════════════════════════════════════
@@ -186,7 +194,7 @@ def render_metric_bar(issues, stats):
     st.markdown(html, unsafe_allow_html=True)
 
 
-def build_profile_figure(selected_ids, network, gdfs, issues):
+def build_profile_figure(selected_ids, network, gdfs, issues, ledger=None):
     """Build a matplotlib profile view for selected pipes/junctions.
 
     Shows pipe inverts as sloped lines with diameter indicated,
@@ -263,18 +271,26 @@ def build_profile_figure(selected_ids, network, gdfs, issues):
     fig.patch.set_facecolor("#0e1117")
     ax.set_facecolor("#0e1117")
 
+    if ledger is None:
+        ledger = []
+
     # Draw pipes as sloped bands showing diameter
     for start_sta, end_sta, edata in profile_pipes:
-        us_inv = edata.get("us_invert")
-        ds_inv = edata.get("ds_invert")
+        us_inv_orig = edata.get("us_invert")
+        ds_inv_orig = edata.get("ds_invert")
         diameter_in = edata.get("diameter")
         pid = str(edata.get("pipe_id", ""))
 
-        if us_inv is None or ds_inv is None:
+        if us_inv_orig is None or ds_inv_orig is None:
             continue
 
-        us_inv = float(us_inv)
-        ds_inv = float(ds_inv)
+        us_inv_orig = float(us_inv_orig)
+        ds_inv_orig = float(ds_inv_orig)
+
+        # Apply ledger edits
+        us_inv = get_current_value(ledger, pid, "us_invert", us_inv_orig)
+        ds_inv = get_current_value(ledger, pid, "ds_invert", ds_inv_orig)
+        was_edited = (us_inv != us_inv_orig or ds_inv != ds_inv_orig)
         dia_ft = float(diameter_in) / 12.0 if diameter_in else 0.5
 
         # Pipe invert line (bottom of pipe)
@@ -291,6 +307,17 @@ def build_profile_figure(selected_ids, network, gdfs, issues):
         else:
             color = "#4A90D9"
             lw = 1.5
+
+        # If edited, draw original as faded ghost
+        if was_edited:
+            orig_inverts = [us_inv_orig, ds_inv_orig]
+            orig_crowns = [us_inv_orig + dia_ft, ds_inv_orig + dia_ft]
+            ax.plot([start_sta, end_sta], orig_inverts, color="#888888",
+                    linewidth=1, linestyle=":", alpha=0.5, zorder=2)
+            ax.plot([start_sta, end_sta], orig_crowns, color="#888888",
+                    linewidth=0.5, linestyle=":", alpha=0.3, zorder=2)
+            color = "#00CC66"  # Green for edited pipes
+            lw = 2.5
 
         # Draw pipe as a band (invert to crown)
         xs = [start_sta, end_sta]
@@ -335,7 +362,8 @@ def build_profile_figure(selected_ids, network, gdfs, issues):
     # Draw junction markers
     for sta, nid, ndata in profile_nodes:
         rim = ndata.get("rim_elev")
-        inv = ndata.get("invert_elev")
+        inv_orig = ndata.get("invert_elev")
+        inv = get_current_value(ledger, nid, "invert_elev", inv_orig)
 
         node_issues = issue_map.get(nid, [])
         has_depth_issue = any(i.issue_type in ("SHALLOW_STRUCTURE", "DEEP_STRUCTURE")
@@ -381,6 +409,8 @@ def build_profile_figure(selected_ids, network, gdfs, issues):
         mpatches.Patch(color="#4A90D9", alpha=0.4, label="Pipe (normal)"),
         mpatches.Patch(color="#FF4444", alpha=0.4, label="Adverse slope"),
         mpatches.Patch(color="#FF8C00", alpha=0.4, label="Diameter decrease"),
+        mpatches.Patch(color="#00CC66", alpha=0.4, label="Edited (fix applied)"),
+        mpatches.Patch(color="#888888", alpha=0.3, label="Original (before fix)"),
     ]
     ax.legend(handles=legend_items, loc="upper right", fontsize=7,
               facecolor="#1a1a2e", edgecolor="#333333", labelcolor="#cccccc")
@@ -519,6 +549,8 @@ with st.sidebar:
             st.session_state["_prev_map_click"] = None
             st.session_state["zoom_bounds"] = None
             st.session_state["_last_processed_drawing"] = None
+            st.session_state["edit_ledger"] = []
+            st.session_state["preview_entries"] = None
 
             # Pre-convert GDFs to WGS84 so box-select doesn't re-convert every time
             gdfs_4326 = {}
@@ -923,6 +955,80 @@ else:
             else:
                 st.success("No issues for this feature.", icon="✅")
 
+            # ── Fix Options ──
+            fixable_issues = [i for i in feature_issues if get_strategies(i.issue_type)]
+            if fixable_issues:
+                st.markdown("---")
+                st.markdown("**Fix Options**")
+                for idx, issue in enumerate(fixable_issues):
+                    strategies = get_strategies(issue.issue_type)
+                    display_name = ISSUE_DISPLAY_NAMES.get(issue.issue_type, issue.issue_type)
+                    strategy_names = [s[1] for s in strategies]
+                    selected_strategy = st.selectbox(
+                        f"{display_name}",
+                        strategy_names,
+                        key=f"fix_strategy_{inspected_fid}_{issue.issue_type}_{idx}",
+                    )
+
+                    # Find the strategy key
+                    strategy_key = next(s[0] for s in strategies if s[1] == selected_strategy)
+
+                    fix_col1, fix_col2 = st.columns(2)
+                    with fix_col1:
+                        if st.button("Preview", key=f"preview_{inspected_fid}_{idx}",
+                                     use_container_width=True):
+                            entries = compute_fix(
+                                strategy_key, issue,
+                                network["graph"],
+                                st.session_state["edit_ledger"],
+                            )
+                            st.session_state["preview_entries"] = entries
+                            st.session_state["preview_issue_key"] = f"{inspected_fid}_{idx}"
+                            st.rerun()
+
+                    with fix_col2:
+                        if st.button("Apply", key=f"apply_{inspected_fid}_{idx}",
+                                     use_container_width=True, type="primary"):
+                            entries = compute_fix(
+                                strategy_key, issue,
+                                network["graph"],
+                                st.session_state["edit_ledger"],
+                            )
+                            if entries:
+                                apply_group(st.session_state["edit_ledger"], entries)
+                                st.session_state["preview_entries"] = None
+                                st.rerun()
+
+                    # Show preview if it matches this issue
+                    preview = st.session_state.get("preview_entries")
+                    preview_key = st.session_state.get("preview_issue_key")
+                    if preview is not None and preview_key == f"{inspected_fid}_{idx}":
+                        if preview:
+                            preview_data = []
+                            for e in preview:
+                                preview_data.append({
+                                    "Feature": e.feature_id,
+                                    "Field": e.field,
+                                    "Old": f"{e.old_value:.3f}" if e.old_value is not None else "—",
+                                    "New": f"{e.new_value:.3f}" if e.new_value is not None else "—",
+                                    "Reason": e.reason,
+                                })
+                            st.dataframe(pd.DataFrame(preview_data), hide_index=True,
+                                         use_container_width=True, height=min(35 * len(preview_data) + 38, 200))
+                        else:
+                            st.caption("No changes needed.")
+
+            # ── Undo last fix ──
+            ledger = st.session_state.get("edit_ledger", [])
+            if ledger:
+                summary = ledger_summary(ledger)
+                st.markdown("---")
+                st.caption(f"{summary['total_edits']} pending edit(s) across {summary['total_fixes']} fix(es)")
+                if st.button("Undo Last Fix", key="undo_fix", use_container_width=True):
+                    undo_last_group(st.session_state["edit_ledger"])
+                    st.session_state["preview_entries"] = None
+                    st.rerun()
+
             # ── Action buttons ──
             st.markdown("---")
             btn_c1, btn_c2 = st.columns(2)
@@ -1054,7 +1160,8 @@ else:
     with tab_profile:
         map_sel = st.session_state.get("map_selection", set())
         if map_sel:
-            fig = build_profile_figure(map_sel, network, gdfs, filtered_issues)
+            fig = build_profile_figure(map_sel, network, gdfs, filtered_issues,
+                                       ledger=st.session_state.get("edit_ledger", []))
             if fig:
                 st.pyplot(fig, use_container_width=True)
                 plt.close(fig)
