@@ -125,6 +125,15 @@ if "box_select_corner1" not in st.session_state:
 # HELPER FUNCTIONS
 # ════════════════════════════════════════════════════════════
 
+def _save_map_view(map_result):
+    """Save current map center/zoom to session state before a rerun."""
+    if map_result and map_result.get("center"):
+        c = map_result["center"]
+        st.session_state["_map_center"] = [c["lat"], c["lng"]]
+    if map_result and map_result.get("zoom") is not None:
+        st.session_state["_map_zoom"] = map_result["zoom"]
+
+
 def upload_shapefile(label, key):
     files = st.file_uploader(
         label,
@@ -726,24 +735,16 @@ else:
             edit_options={"edit": False, "remove": False},
         ).add_to(m)
 
-        # Render interactive map, preserving zoom/center across reruns
+        # Render interactive map, preserving zoom/center across selection reruns
         render_key = st.session_state.get("_map_render_key", 0)
-        saved_center = st.session_state.get("_map_center")
-        saved_zoom = st.session_state.get("_map_zoom")
+        saved_center = st.session_state.pop("_map_center", None)
+        saved_zoom = st.session_state.pop("_map_zoom", None)
         folium_kwargs = dict(height=620, use_container_width=True,
                              key=f"main_map_{render_key}")
         if saved_center and saved_zoom is not None:
             folium_kwargs["center"] = saved_center
             folium_kwargs["zoom"] = saved_zoom
         map_result = st_folium(m, **folium_kwargs)
-
-        # ── Save current map view for preserving across reruns ──
-        if map_result:
-            if map_result.get("center"):
-                c = map_result["center"]
-                st.session_state["_map_center"] = [c["lat"], c["lng"]]
-            if map_result.get("zoom") is not None:
-                st.session_state["_map_zoom"] = map_result["zoom"]
 
         # ── Process drawn rectangles (Box Select) ──
         if map_result and st.session_state.get("select_on_map", False):
@@ -784,6 +785,7 @@ else:
                         else:
                             sel -= found_ids
                         st.session_state["map_selection"] = sel
+                        _save_map_view(map_result)
                         st.rerun()
 
         # ── Handle clicks ──
@@ -808,6 +810,7 @@ else:
                     else:
                         # ── Inspect mode: show feature details ──
                         st.session_state["inspected_feature"] = fid
+                    _save_map_view(map_result)
                     st.rerun()
 
     with detail_col:
