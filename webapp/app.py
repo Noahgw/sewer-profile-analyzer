@@ -735,10 +735,14 @@ else:
 
         # ── Process drawn rectangles (Box Select) ──
         if map_result and st.session_state.get("select_on_map", False):
-            drawing = map_result.get("last_active_drawing")
+            # Check all_drawings first (list), then last_active_drawing
+            all_drawings = map_result.get("all_drawings") or []
+            drawing = all_drawings[-1] if all_drawings else map_result.get("last_active_drawing")
             if drawing and drawing != st.session_state.get("_last_processed_drawing"):
-                geom = drawing.get("geometry", {})
-                if geom.get("type") == "Polygon":
+                # Handle various drawing formats from streamlit-folium
+                geom = drawing.get("geometry", drawing)
+                geom_type = geom.get("type", "")
+                if geom_type in ("Polygon", "Rectangle") or "coordinates" in geom:
                     st.session_state["_last_processed_drawing"] = drawing
                     coords = geom["coordinates"][0]  # GeoJSON [lon, lat]
                     lons = [c[0] for c in coords]
