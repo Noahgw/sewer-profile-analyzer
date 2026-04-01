@@ -214,92 +214,56 @@ def build_base_map(pipes_gdf=None, junctions_gdf=None, pumps_gdf=None, storage_g
         name="Satellite",
     ).add_to(m)
 
-    # Add pipes layer with flow-direction arrows
+    # Add pipes layer as a single GeoJSON for fast rendering
     if pipes_gdf is not None and len(pipes_gdf) > 0:
         pipes_wgs = _ensure_wgs84(pipes_gdf)
         _show = visible_layers.get("Pipes", True) if visible_layers else True
+
+        # Simplify geometry to reduce vertex count (tolerance in degrees ≈ 1m)
+        pipes_simple = pipes_wgs.copy()
+        pipes_simple["geometry"] = pipes_simple.geometry.simplify(0.00001, preserve_topology=True)
+
+        # Build GeoJSON with tooltip field
+        id_col = pipes_simple.columns[0]
+        pipes_simple["_tooltip"] = pipes_simple[id_col].astype(str)
+        geojson_data = json.loads(pipes_simple[["_tooltip", "geometry"]].to_json())
+
         pipes_layer = folium.FeatureGroup(name="Pipes", show=_show)
-
-        # Build upstream→downstream orientation lookup from graph
-        # Maps frozenset({start_latlon, end_latlon}) → (us_latlon, ds_latlon)
-        _edge_dir = {}
-        if network_result and "graph" in network_result:
-            G = network_result["graph"]
-            for u, v in G.edges():
-                uc = G.nodes[u].get("coords")  # (lon, lat)
-                vc = G.nodes[v].get("coords")
-                if uc and vc:
-                    # Round to avoid floating-point mismatch
-                    u_ll = (round(uc[1], 6), round(uc[0], 6))  # (lat, lon)
-                    v_ll = (round(vc[1], 6), round(vc[0], 6))
-                    _edge_dir[frozenset((u_ll, v_ll))] = (u_ll, v_ll)
-
-        for idx, row in pipes_wgs.iterrows():
-            coords = _extract_line_coords(row.geometry)
-            if coords:
-                # Orient coords upstream→downstream using graph if available
-                if _edge_dir and len(coords) >= 2:
-                    start = (round(coords[0][0], 6), round(coords[0][1], 6))
-                    end = (round(coords[-1][0], 6), round(coords[-1][1], 6))
-                    key = frozenset((start, end))
-                    direction = _edge_dir.get(key)
-                    if direction:
-                        us_ll, ds_ll = direction
-                        # If pipe start is at downstream node, reverse
-                        if start == ds_ll and end == us_ll:
-                            coords = list(reversed(coords))
-
-                line = folium.PolyLine(
-                    coords,
-                    color="#4A90D9",
-                    weight=3,
-                    opacity=0.7,
-                    tooltip=str(row.get(pipes_wgs.columns[0], idx)),
-                )
-                line.add_to(pipes_layer)
-
-                # Single triangle arrow at pipe midpoint
-                mp = _line_midpoint_and_bearing(coords)
-                if mp:
-                    mid_lat, mid_lon, bearing = mp
-                    # Size proportional to pipe length (in degrees), clamped
-                    total_len = sum(
-                        math.sqrt((coords[i][0] - coords[i-1][0])**2 +
-                                  (coords[i][1] - coords[i-1][1])**2)
-                        for i in range(1, len(coords))
-                    )
-                    arrow_size = max(min(total_len * 0.15, 0.0005), 0.00005)
-                    tri = _arrow_triangle(mid_lat, mid_lon, bearing, arrow_size)
-                    pipe_id = str(row.get(pipes_wgs.columns[0], idx))
-                    folium.Polygon(
-                        locations=tri,
-                        color="#3a78b5",
-                        weight=1,
-                        fill=True,
-                        fill_color="#3a78b5",
-                        fill_opacity=0.8,
-                        tooltip=pipe_id,
-                    ).add_to(pipes_layer)
-
+        folium.GeoJson(
+            geojson_data,
+            style_function=lambda f: {
+                "color": "#4A90D9",
+                "weight": 3,
+                "opacity": 0.7,
+            },
+            tooltip=folium.GeoJsonTooltip(fields=["_tooltip"], aliases=[""], labels=False),
+        ).add_to(pipes_layer)
         pipes_layer.add_to(m)
 
-    # Add junctions layer
+    # Add junctions layer as a single GeoJSON for fast rendering
     if junctions_gdf is not None and len(junctions_gdf) > 0:
         juncs_wgs = _ensure_wgs84(junctions_gdf)
         _show = visible_layers.get("Junctions", True) if visible_layers else True
+
+        id_col = juncs_wgs.columns[0]
+        juncs_wgs = juncs_wgs.copy()
+        juncs_wgs["_tooltip"] = juncs_wgs[id_col].astype(str)
+        geojson_data = json.loads(juncs_wgs[["_tooltip", "geometry"]].to_json())
+
         juncs_layer = folium.FeatureGroup(name="Junctions", show=_show)
-        for idx, row in juncs_wgs.iterrows():
-            latlon = _extract_point_latlon(row.geometry)
-            if latlon:
-                folium.CircleMarker(
-                    location=list(latlon),
-                    radius=5,
-                    color="#2E8B57",
-                    fill=True,
-                    fill_color="#2E8B57",
-                    fill_opacity=0.8,
-                    tooltip=str(row.get(juncs_wgs.columns[0], idx)),
-                ).add_to(juncs_layer)
+        folium.GeoJson(
+            geojson_data,
+            style_function=lambda f: {
+                "color": "#2E8B57",
+                "fillColor": "#2E8B57",
+                "fillOpacity": 0.8,
+                "weight": 1,
+                "radius": 5,
+            },
+            marker=folium.CircleMarker(radius=5, fill=True, fill_color="#2E8B57",
+                                        fill_opacity=0.8, color="#2E8B57", weight=1),
+            tooltip=folium.GeoJsonTooltip(fields=["_tooltip"], aliases=[""], labels=False),
+        ).add_to(juncs_layer)
         juncs_layer.add_to(m)
 
     # Add pumps layer
