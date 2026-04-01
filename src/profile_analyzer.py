@@ -160,7 +160,7 @@ def analyze_invert_mismatches(G, has_networkx=False, thresholds=None):
     the junction's invert_elev, and the outgoing pipe's us_invert should also match.
     """
     t = thresholds or DEFAULT_PROFILE_THRESHOLDS
-    tol = t.get("invert_mismatch_tolerance_m", t.get("invert_mismatch_tolerance_ft", 0.01))
+    tol = t.get("invert_mismatch_tolerance_m", 0.01)
     issues = []
 
     for nid in G.nodes:
@@ -263,8 +263,8 @@ def analyze_diameter_continuity(G, has_networkx=False):
 def analyze_structure_depths(G, has_networkx=False, thresholds=None):
     """Check junction rim-to-invert depths for anomalies."""
     t = thresholds or DEFAULT_PROFILE_THRESHOLDS
-    min_depth = t.get("min_structure_depth_m", t.get("min_structure_depth_ft", 0.6))
-    max_depth = t.get("max_structure_depth_m", t.get("max_structure_depth_ft", 10.0))
+    min_depth = t.get("min_structure_depth_m", 0.6)
+    max_depth = t.get("max_structure_depth_m", 10.0)
     issues = []
 
     for nid in G.nodes:
