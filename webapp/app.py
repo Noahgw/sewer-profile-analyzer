@@ -614,8 +614,11 @@ with st.sidebar:
 
             thresholds = {
                 "invert_mismatch_tolerance_m": invert_tolerance,
+                "invert_mismatch_tolerance_ft": invert_tolerance,
                 "min_structure_depth_m": min_depth,
+                "min_structure_depth_ft": min_depth,
                 "max_structure_depth_m": max_depth,
+                "max_structure_depth_ft": max_depth,
                 "adverse_slope_severity_threshold": -0.01,
             }
             analysis = run_full_analysis(network, thresholds)
