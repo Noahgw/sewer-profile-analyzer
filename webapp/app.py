@@ -558,6 +558,16 @@ with st.sidebar:
         st.caption(f"Loaded: {loaded}")
         st.caption(f"CRS: {_crs_info}")
 
+        # Warn if coordinates look projected but no CRS is set
+        if _first_gdf.crs is None:
+            bounds = _first_gdf.total_bounds  # [minx, miny, maxx, maxy]
+            if abs(bounds[0]) > 360 or abs(bounds[1]) > 360:
+                st.sidebar.warning(
+                    "⚠️ Coordinates appear to be in a projected system (not lat/lon) "
+                    "but no CRS was detected. Please select the correct coordinate "
+                    "system above (e.g. UTM zone or State Plane) or the map will not render correctly."
+                )
+
     # ── Field Mapping ──
     mappings = {}
     if gdfs:
@@ -575,10 +585,10 @@ with st.sidebar:
 
     # ── Analysis Settings ──
     with st.expander("⚙️ Settings"):
-        snap_tolerance = st.slider("Snap Tolerance", 0.1, 20.0, 1.0, 0.1)
-        invert_tolerance = st.slider("Invert Mismatch Tolerance (ft)", 0.01, 1.0, 0.02, 0.01)
-        min_depth = st.slider("Min Structure Depth (ft)", 0.5, 5.0, 2.0, 0.5)
-        max_depth = st.slider("Max Structure Depth (ft)", 15.0, 50.0, 30.0, 1.0)
+        snap_tolerance = st.slider("Snap Tolerance (m)", 0.1, 20.0, 1.0, 0.1)
+        invert_tolerance = st.slider("Invert Mismatch Tolerance (m)", 0.001, 0.5, 0.01, 0.001, format="%.3f")
+        min_depth = st.slider("Min Structure Depth (m)", 0.3, 2.0, 0.6, 0.1)
+        max_depth = st.slider("Max Structure Depth (m)", 5.0, 20.0, 10.0, 0.5)
 
     # ── Run Button ──
     st.markdown("---")
@@ -603,9 +613,9 @@ with st.sidebar:
             )
 
             thresholds = {
-                "invert_mismatch_tolerance_ft": invert_tolerance,
-                "min_structure_depth_ft": min_depth,
-                "max_structure_depth_ft": max_depth,
+                "invert_mismatch_tolerance_m": invert_tolerance,
+                "min_structure_depth_m": min_depth,
+                "max_structure_depth_m": max_depth,
                 "adverse_slope_severity_threshold": -0.01,
             }
             analysis = run_full_analysis(network, thresholds)
@@ -629,14 +639,26 @@ with st.sidebar:
 
             # Pre-convert GDFs to WGS84 so box-select doesn't re-convert every time
             gdfs_4326 = {}
+            _crs_error = False
             for ftype, gdf in gdfs.items():
                 if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
                     gdfs_4326[ftype] = gdf.to_crs(epsg=4326)
                 elif gdf.crs is None:
-                    gdfs_4326[ftype] = gdf.set_crs(epsg=4326)
+                    # Check if coordinates look like lat/lon (within valid range)
+                    bounds = gdf.total_bounds
+                    if abs(bounds[0]) <= 360 and abs(bounds[1]) <= 180:
+                        gdfs_4326[ftype] = gdf.set_crs(epsg=4326)
+                    else:
+                        _crs_error = True
+                        gdfs_4326[ftype] = gdf  # skip — can't convert without CRS
                 else:
                     gdfs_4326[ftype] = gdf
             st.session_state["gdfs_4326"] = gdfs_4326
+            if _crs_error:
+                st.error(
+                    "Cannot display map: coordinate system is missing and coordinates "
+                    "are not in lat/lon. Go back and select the correct CRS in Upload Data."
+                )
 
         st.rerun()
 

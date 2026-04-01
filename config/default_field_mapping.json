@@ -2,26 +2,20 @@
   "_comment": "Default field mapping configuration for ArcGIS Pro AutoFix Tool. Each feature type maps internal field names to a list of common variants found in municipal GIS datasets. The tool auto-detects by matching against these variants (case-insensitive). Users can override via the tool UI.",
 
   "pipes": {
-    "pipe_id":       ["PIPE_ID", "PIPEID", "FACILITYID", "ASSET_ID", "OBJECTID", "FID", "COMPKEY"],
-    "us_invert":     ["INVERTUP", "US_INVERT", "INV_ELEV_UP", "BEGIN_INVERT", "HIGHELEV", "UPINVERT", "UPSTREAM_INVERT", "US_IE", "USELEV", "INVERT_START"],
-    "ds_invert":     ["INVERTDN", "DS_INVERT", "INV_ELEV_DN", "END_INVERT", "INVERTELEV", "DNINVERT", "DOWNSTREAM_INVERT", "DS_IE", "DSELEV", "INVERT_END"],
-    "diameter":      ["DIAMETER", "PIPE_DIA", "SIZE_", "PIPE_SIZE", "DIAM", "WIDTH", "PIPEDIA", "NOMINAL_DIAMETER"],
-    "material":      ["MATERIAL", "PIPE_MAT", "MAT_CODE", "PIPEMATERIAL", "PIPE_MATERIAL", "MATL"],
-    "length":        ["LENGTH", "PIPE_LENGTH", "SHAPE_LENGTH", "PIPE_LEN", "SEG_LENGTH"],
-    "slope":         ["SLOPE", "GRADIENT", "GRADE", "PIPE_SLOPE"],
-    "us_node":       ["UPSTREAM_MH", "START_NODE", "FROM_NODE", "US_NODE", "USMH", "MH_FROM", "FROMMH"],
-    "ds_node":       ["DOWNSTREAM_MH", "END_NODE", "TO_NODE", "DS_NODE", "DSMH", "MH_TO", "TOMH"],
-    "flow_dir":      ["FLOW_DIR", "FLOWDIR", "FLOW_DIRECTION"],
-    "install_date":  ["INSTALLDATE", "YEAR_INSTALLED", "INSTALL_YEAR", "YEARBUILT", "DATE_INSTALLED"],
-    "status":        ["STATUS", "CONDITION", "PIPE_STATUS", "LIFECYCLE_STATUS"]
+    "pipe_id":       ["ID", "PIPE_ID", "PIPEID", "FACILITYID", "ASSET_ID", "OBJECTID", "FID", "COMPKEY"],
+    "us_invert":     ["UP_DATA", "INVERTUP", "US_INVERT", "INV_ELEV_UP", "BEGIN_INVERT", "HIGHELEV", "UPINVERT", "UPSTREAM_INVERT", "US_IE", "USELEV", "INVERT_START"],
+    "ds_invert":     ["DN_DATA", "INVERTDN", "DS_INVERT", "INV_ELEV_DN", "END_INVERT", "INVERTELEV", "DNINVERT", "DOWNSTREAM_INVERT", "DS_IE", "DSELEV", "INVERT_END"],
+    "diameter":      ["GEOM1", "DIAMETER", "PIPE_DIA", "SIZE_", "PIPE_SIZE", "DIAM", "WIDTH", "PIPEDIA", "NOMINAL_DIAMETER"],
+    "length":        ["LENGTH", "PIPE_LENGTH", "SHAPE_LENGTH", "PIPE_LEN", "SEG_LENGTH", "CAL_LENGTH"],
+    "us_node":       ["FROM", "UPSTREAM_MH", "START_NODE", "FROM_NODE", "US_NODE", "USMH", "MH_FROM", "FROMMH"],
+    "ds_node":       ["TO", "DOWNSTREAM_MH", "END_NODE", "TO_NODE", "DS_NODE", "DSMH", "MH_TO", "TOMH"],
+    "force_main":    ["FORCE_MAIN", "FORCEMAIN", "FM", "IS_FORCEMAIN", "PS_FM"]
   },
 
   "junctions": {
-    "junction_id":   ["MHID", "MANHOLE_ID", "FACILITYID", "STRUCTURE_ID", "MH_ID", "NODE_ID", "COMPKEY", "ASSET_ID"],
-    "rim_elev":      ["RIMELEV", "RIM_ELEV", "COVER_ELEV", "TOP_ELEVATION", "RIM_ELEVATION", "GROUND_ELEV", "SURFACE_ELEV"],
-    "invert_elev":   ["INVERTELEV", "INVERT_ELEV", "SUMP_ELEVATION", "INV_ELEV", "BOTTOM_ELEV", "INVERT_ELEVATION"],
-    "depth":         ["DEPTH", "MAG_DEPTH", "MANHOLE_DEPTH", "MH_DEPTH", "STRUCT_DEPTH"],
-    "structure_type": ["MHTYPE", "STRUCTURE_TYPE", "TYPE_CODE", "MH_TYPE", "FACILITY_TYPE", "NODE_TYPE"]
+    "junction_id":   ["ID", "MHID", "MANHOLE_ID", "FACILITYID", "STRUCTURE_ID", "MH_ID", "NODE_ID", "COMPKEY", "ASSET_ID"],
+    "rim_elev":      ["RIM_ELEV", "RIMELEV", "COVER_ELEV", "TOP_ELEVATION", "RIM_ELEVATION", "GROUND_ELEV", "SURFACE_ELEV", "EXIST_RIM"],
+    "invert_elev":   ["INV_ELEV", "INVERTELEV", "INVERT_ELEV", "SUMP_ELEVATION", "BOTTOM_ELEV", "INVERT_ELEVATION", "ELEVATION"]
   },
 
   "pumps": {

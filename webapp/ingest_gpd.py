@@ -45,8 +45,8 @@ def get_required_fields(feature_type):
     required = {
         "pipes": ["pipe_id", "us_invert", "ds_invert", "diameter"],
         "junctions": ["junction_id", "invert_elev"],
-        "pumps": ["station_id", "inlet_invert"],
-        "storage": ["tank_id", "base_elev"],
+        "pumps": ["station_id"],
+        "storage": ["tank_id"],
     }
     return required.get(feature_type, [])
 

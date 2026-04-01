@@ -56,11 +56,11 @@ class ProfileIssue:
         return f"[{self.severity}] {self.issue_type} at {self.feature_id}: {self.message}"
 
 
-# Default analysis thresholds
+# Default analysis thresholds (metric)
 DEFAULT_PROFILE_THRESHOLDS = {
-    "invert_mismatch_tolerance_ft": 0.02,  # allowable difference at junctions
-    "min_structure_depth_ft": 2.0,
-    "max_structure_depth_ft": 30.0,
+    "invert_mismatch_tolerance_m": 0.01,  # allowable difference at junctions (metres)
+    "min_structure_depth_m": 0.6,         # ~2 ft
+    "max_structure_depth_m": 10.0,        # ~30 ft
     "adverse_slope_severity_threshold": -0.01,  # steeper adverse = HIGH severity
 }
 
@@ -88,9 +88,25 @@ def _get_edge_attr(G, u, v, has_networkx=False):
     return G.get_edge_data(u, v) or {}
 
 
+def _is_forcemain(data):
+    """Check if a pipe is a force main based on its attributes."""
+    fm = data.get("force_main")
+    if fm is None:
+        return False
+    if isinstance(fm, bool):
+        return fm
+    if isinstance(fm, str):
+        return fm.strip().upper() in ("TRUE", "YES", "1", "Y", "FM")
+    try:
+        return bool(fm)
+    except (ValueError, TypeError):
+        return False
+
+
 def analyze_adverse_slopes(G, has_networkx=False, thresholds=None):
     """
     Check every pipe for adverse slope (downstream invert higher than upstream).
+    Skips force mains — adverse slope is expected for pressurized pipes.
 
     Returns list of ProfileIssue.
     """
@@ -112,6 +128,10 @@ def analyze_adverse_slopes(G, has_networkx=False, thresholds=None):
             ))
             continue
 
+        # Skip adverse slope check for force mains
+        if _is_forcemain(data):
+            continue
+
         if ds_inv > us_inv:
             slope = None
             if length and length > 0:
@@ -123,8 +143,8 @@ def analyze_adverse_slopes(G, has_networkx=False, thresholds=None):
                 ProfileIssue.ADVERSE_SLOPE, severity, pid,
                 f"Pipe {pid} ({u} -> {v})",
                 f"Adverse slope: US invert {us_inv} < DS invert {ds_inv} "
-                f"(rise = {ds_inv - us_inv:.2f} ft"
-                f"{f', slope = {slope:.6f} ft/ft' if slope else ''})",
+                f"(rise = {ds_inv - us_inv:.2f} m"
+                f"{f', slope = {slope:.6f} m/m' if slope else ''})",
                 {"us_node": u, "ds_node": v, "us_invert": us_inv,
                  "ds_invert": ds_inv, "slope": slope, "length": length},
             ))
@@ -140,7 +160,7 @@ def analyze_invert_mismatches(G, has_networkx=False, thresholds=None):
     the junction's invert_elev, and the outgoing pipe's us_invert should also match.
     """
     t = thresholds or DEFAULT_PROFILE_THRESHOLDS
-    tol = t["invert_mismatch_tolerance_ft"]
+    tol = t.get("invert_mismatch_tolerance_m", t.get("invert_mismatch_tolerance_ft", 0.01))
     issues = []
 
     for nid in G.nodes:
@@ -164,7 +184,7 @@ def analyze_invert_mismatches(G, has_networkx=False, thresholds=None):
                     ProfileIssue.INVERT_MISMATCH, ProfileIssue.MEDIUM, nid,
                     f"Junction {nid} (incoming pipe {pid})",
                     f"Incoming pipe ds_invert ({ds_inv}) != junction invert ({junc_inv}), "
-                    f"diff = {abs(ds_inv - junc_inv):.3f} ft",
+                    f"diff = {abs(ds_inv - junc_inv):.3f} m",
                     {"junction_id": nid, "pipe_id": pid, "pipe_ds_invert": ds_inv,
                      "junction_invert": junc_inv, "difference": abs(ds_inv - junc_inv)},
                 ))
@@ -180,7 +200,7 @@ def analyze_invert_mismatches(G, has_networkx=False, thresholds=None):
                     ProfileIssue.INVERT_MISMATCH, ProfileIssue.MEDIUM, nid,
                     f"Junction {nid} (outgoing pipe {pid})",
                     f"Outgoing pipe us_invert ({us_inv}) != junction invert ({junc_inv}), "
-                    f"diff = {abs(us_inv - junc_inv):.3f} ft",
+                    f"diff = {abs(us_inv - junc_inv):.3f} m",
                     {"junction_id": nid, "pipe_id": pid, "pipe_us_invert": us_inv,
                      "junction_invert": junc_inv, "difference": abs(us_inv - junc_inv)},
                 ))
@@ -243,6 +263,8 @@ def analyze_diameter_continuity(G, has_networkx=False):
 def analyze_structure_depths(G, has_networkx=False, thresholds=None):
     """Check junction rim-to-invert depths for anomalies."""
     t = thresholds or DEFAULT_PROFILE_THRESHOLDS
+    min_depth = t.get("min_structure_depth_m", t.get("min_structure_depth_ft", 0.6))
+    max_depth = t.get("max_structure_depth_m", t.get("max_structure_depth_ft", 10.0))
     issues = []
 
     for nid in G.nodes:
@@ -258,21 +280,21 @@ def analyze_structure_depths(G, has_networkx=False, thresholds=None):
 
         depth = rim - inv
 
-        if depth < t["min_structure_depth_ft"]:
+        if depth < min_depth:
             issues.append(ProfileIssue(
                 ProfileIssue.SHALLOW_STRUCTURE, ProfileIssue.LOW, nid,
                 f"Junction {nid}",
-                f"Structure depth {depth:.1f} ft is below minimum {t['min_structure_depth_ft']} ft "
+                f"Structure depth {depth:.1f} m is below minimum {min_depth} m "
                 f"(rim={rim}, inv={inv})",
                 {"junction_id": nid, "rim": rim, "invert": inv, "depth": depth},
                 coordinates=node_attrs.get("coords"),
             ))
 
-        if depth > t["max_structure_depth_ft"]:
+        if depth > max_depth:
             issues.append(ProfileIssue(
                 ProfileIssue.DEEP_STRUCTURE, ProfileIssue.LOW, nid,
                 f"Junction {nid}",
-                f"Structure depth {depth:.1f} ft exceeds maximum {t['max_structure_depth_ft']} ft "
+                f"Structure depth {depth:.1f} m exceeds maximum {max_depth} m "
                 f"(rim={rim}, inv={inv})",
                 {"junction_id": nid, "rim": rim, "invert": inv, "depth": depth},
                 coordinates=node_attrs.get("coords"),

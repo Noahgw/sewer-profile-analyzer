@@ -143,14 +143,16 @@ def validate_pipes(records, thresholds=None):
                     "pipes", pid, "length", "SUSPICIOUS_VALUE", "WARNING",
                     f"Pipe length {length} ft is suspiciously long", length))
 
-        # Slope / adverse slope check
-        if us_inv is not None and ds_inv is not None and length is not None and length > 0:
+        # Slope / adverse slope check (skip force mains)
+        _fm = rec.get("force_main")
+        _is_fm = _fm in (True, "True", "TRUE", "Yes", "YES", "1", "Y") if _fm else False
+        if us_inv is not None and ds_inv is not None and length is not None and length > 0 and not _is_fm:
             slope = (us_inv - ds_inv) / length
             if slope < 0:
                 severity = "ERROR" if slope < t["min_slope"] else "WARNING"
                 issues.append(ValidationIssue(
                     "pipes", pid, "slope", "ADVERSE_SLOPE", severity,
-                    f"Adverse slope detected: {slope:.6f} ft/ft "
+                    f"Adverse slope detected: {slope:.6f} m/m "
                     f"(US={us_inv}, DS={ds_inv}, L={length})", slope))
 
         # Geometry check
