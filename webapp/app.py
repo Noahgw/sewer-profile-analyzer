@@ -1367,7 +1367,7 @@ else:
             fig = build_profile_figure(map_sel, network, gdfs, filtered_issues,
                                        ledger=st.session_state.get("edit_ledger", []))
             if fig:
-                st.pyplot(fig, use_container_width=True)
+                st.pyplot(fig, width="stretch")
                 plt.close(fig)
             else:
                 st.info("No pipe data found for the selected features.")
