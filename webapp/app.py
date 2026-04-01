@@ -21,9 +21,6 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import FancyArrowPatch
 import numpy as np
-from streamlit_folium import st_folium
-from shapely.geometry import box as shapely_box
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from webapp.ingest_gpd import (
@@ -33,8 +30,8 @@ from webapp.ingest_gpd import (
 from src.network_builder import build_network
 from src.profile_analyzer import run_full_analysis, trace_profile
 from webapp.map_builder import (
-    build_base_map, add_issues_to_map, add_resolved_issues_to_map,
-    add_selection_layer, ISSUE_COLORS, ISSUE_DISPLAY_NAMES, get_feature_bounds
+    build_pydeck_map, ISSUE_COLORS, ISSUE_DISPLAY_NAMES, get_feature_bounds,
+    render_issues_summary_html,
 )
 from webapp.fix_toolkit import (
     LedgerEntry, apply_group, undo_last_group, get_current_value,
@@ -108,22 +105,8 @@ st.markdown("""
 # ── Selection & Inspection State ──
 if "map_selection" not in st.session_state:
     st.session_state["map_selection"] = set()
-if "_prev_map_click" not in st.session_state:
-    st.session_state["_prev_map_click"] = None
-if "_map_render_key" not in st.session_state:
-    st.session_state["_map_render_key"] = 0
-if "_prev_click_fid" not in st.session_state:
-    st.session_state["_prev_click_fid"] = None
-if "_prev_click_time" not in st.session_state:
-    st.session_state["_prev_click_time"] = 0.0
 if "inspected_feature" not in st.session_state:
     st.session_state["inspected_feature"] = None
-if "_last_processed_drawing" not in st.session_state:
-    st.session_state["_last_processed_drawing"] = None
-if "box_select_mode" not in st.session_state:
-    st.session_state["box_select_mode"] = False
-if "box_select_corner1" not in st.session_state:
-    st.session_state["box_select_corner1"] = None
 if "edit_ledger" not in st.session_state:
     st.session_state["edit_ledger"] = []
 if "preview_entries" not in st.session_state:
@@ -133,15 +116,6 @@ if "preview_entries" not in st.session_state:
 # ════════════════════════════════════════════════════════════
 # HELPER FUNCTIONS
 # ════════════════════════════════════════════════════════════
-
-def _save_map_view(map_result):
-    """Save current map center/zoom to session state before a rerun."""
-    if map_result and map_result.get("center"):
-        c = map_result["center"]
-        st.session_state["_map_center"] = [c["lat"], c["lng"]]
-    if map_result and map_result.get("zoom") is not None:
-        st.session_state["_map_zoom"] = map_result["zoom"]
-
 
 def upload_shapefile(label, key):
     files = st.file_uploader(
@@ -420,35 +394,6 @@ def build_profile_figure(selected_ids, network, gdfs, issues, ledger=None):
     return fig
 
 
-def render_issues_summary(issues):
-    """Render a clean issue summary grouped by type."""
-    if not issues:
-        st.success("No issues detected. Your network is clean.")
-        return
-
-    # Group by type
-    by_type = {}
-    for issue in issues:
-        key = issue.issue_type
-        if key not in by_type:
-            by_type[key] = []
-        by_type[key].append(issue)
-
-    html = ""
-    for itype, issue_list in sorted(by_type.items(), key=lambda x: -len(x[1])):
-        count = len(issue_list)
-        color = ISSUE_COLORS.get(itype, "#999")
-        display_name = itype.replace("_", " ").title()
-
-        html += f"""<div class="issue-row">
-            <span style="color:{color};font-size:16px;margin-right:8px;">●</span>
-            <span style="flex:1;font-weight:500;">{display_name}</span>
-            <span style="font-weight:700;font-size:16px;">{count}</span>
-        </div>"""
-
-    st.markdown(html, unsafe_allow_html=True)
-
-
 # ════════════════════════════════════════════════════════════
 # SIDEBAR — Upload, Field Mapping, Settings, Run
 # ════════════════════════════════════════════════════════════
@@ -634,34 +579,8 @@ with st.sidebar:
             # Clear stale selection/inspection state from previous analysis
             st.session_state["map_selection"] = set()
             st.session_state["inspected_feature"] = None
-            st.session_state["_prev_map_click"] = None
-            st.session_state["zoom_bounds"] = None
-            st.session_state["_last_processed_drawing"] = None
             st.session_state["edit_ledger"] = []
             st.session_state["preview_entries"] = None
-
-            # Pre-convert GDFs to WGS84 so box-select doesn't re-convert every time
-            gdfs_4326 = {}
-            _crs_error = False
-            for ftype, gdf in gdfs.items():
-                if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
-                    gdfs_4326[ftype] = gdf.to_crs(epsg=4326)
-                elif gdf.crs is None:
-                    # Check if coordinates look like lat/lon (within valid range)
-                    bounds = gdf.total_bounds
-                    if abs(bounds[0]) <= 360 and abs(bounds[1]) <= 180:
-                        gdfs_4326[ftype] = gdf.set_crs(epsg=4326)
-                    else:
-                        _crs_error = True
-                        gdfs_4326[ftype] = gdf  # skip — can't convert without CRS
-                else:
-                    gdfs_4326[ftype] = gdf
-            st.session_state["gdfs_4326"] = gdfs_4326
-            if _crs_error:
-                st.error(
-                    "Cannot display map: coordinate system is missing and coordinates "
-                    "are not in lat/lon. Go back and select the correct CRS in Upload Data."
-                )
 
         st.rerun()
 
@@ -696,56 +615,16 @@ with st.sidebar:
                         key="vis_resolved",
                     )
 
-        # ── Selection Tools (ArcGIS Pro-style) ──
+        # ── Selection Tools ──
         with st.expander("🔷 Selection", expanded=True):
-            st.toggle("Select on Map", key="select_on_map", value=False)
-            st.radio(
-                "Mode", ["Add to Selection", "Remove from Selection"],
-                key="selection_action", horizontal=True,
-                label_visibility="collapsed",
-            )
+            st.caption("Click features on the map to select them.")
 
-            # ── Selection count & actions ──
             map_sel = st.session_state.get("map_selection", set())
-            gdfs_ref = st.session_state.get("gdfs", {})
             if map_sel:
-                pipe_sel_count = 0
-                junc_sel_count = 0
-                if "pipes" in gdfs_ref:
-                    pipe_id_col = gdfs_ref["pipes"].columns[0]
-                    pipe_sel_count = len(
-                        map_sel & set(gdfs_ref["pipes"][pipe_id_col].astype(str))
-                    )
-                if "junctions" in gdfs_ref:
-                    junc_id_col = gdfs_ref["junctions"].columns[0]
-                    junc_sel_count = len(
-                        map_sel & set(gdfs_ref["junctions"][junc_id_col].astype(str))
-                    )
                 st.markdown(f"**{len(map_sel)}** feature(s) selected")
-                if pipe_sel_count:
-                    st.caption(f"Pipes: {pipe_sel_count}")
-                if junc_sel_count:
-                    st.caption(f"Junctions: {junc_sel_count}")
-
-                sel_c1, sel_c2 = st.columns(2)
-                with sel_c1:
-                    if st.button("✕ Clear", key="clear_sel", width="stretch"):
-                        st.session_state["map_selection"] = set()
-                        st.session_state["_prev_map_click"] = None
-                        st.session_state["_last_processed_drawing"] = None
-                        st.rerun()
-                with sel_c2:
-                    if st.button("🔍 Zoom", key="zoom_sel", width="stretch"):
-                        bounds = get_feature_bounds(
-                            list(map_sel),
-                            pipes_gdf=gdfs_ref.get("pipes"),
-                            junctions_gdf=gdfs_ref.get("junctions"),
-                            network_result=st.session_state.get("network"),
-                        )
-                        if bounds:
-                            st.session_state["zoom_bounds"] = bounds
-                            st.session_state["_map_render_key"] += 1
-                            st.rerun()
+                if st.button("✕ Clear Selection", key="clear_sel", width="stretch"):
+                    st.session_state["map_selection"] = set()
+                    st.rerun()
 
         # ── Filters ──
         st.markdown("---")
@@ -828,8 +707,9 @@ else:
         display = ISSUE_DISPLAY_NAMES.get(itype, itype.replace("_", " ").title())
         visible_layers[display] = st.session_state.get(f"vis_issue_{itype}", True)
 
-    # ── Retrieve zoom bounds (set by Zoom to Selection / Zoom to Issue) ──
-    zoom_bounds = st.session_state.get("zoom_bounds", None)
+    # Add resolved issues visibility
+    if st.session_state.get("edit_ledger"):
+        visible_layers["Resolved Issues"] = st.session_state.get("vis_resolved", True)
 
     # ── Metric Bar ──
     render_metric_bar(filtered_issues, stats)
@@ -838,149 +718,49 @@ else:
     map_col, detail_col = st.columns([3, 1])
 
     with map_col:
-        # Selection mode banner
-        if st.session_state.get("select_on_map", False):
-            action = st.session_state.get("selection_action", "Add to Selection")
-            sel_count = len(st.session_state.get("map_selection", set()))
-            st.markdown(
-                f'<div style="background:#00FFFF22;border:1px solid #00FFFF;border-radius:4px;'
-                f'padding:6px 12px;margin-bottom:8px;font-size:13px;color:#00FFFF;">'
-                f'<b>Selection Mode:</b> {action} &nbsp;·&nbsp; '
-                f'{sel_count} feature(s) selected &nbsp;·&nbsp; '
-                f'Click features or draw a box to select</div>',
-                unsafe_allow_html=True,
-            )
-
-        # Build map with visibility state and zoom
-        m = build_base_map(
+        # Build pydeck map with all layers
+        map_selection = st.session_state.get("map_selection", set())
+        deck = build_pydeck_map(
             pipes_gdf=gdfs.get("pipes"),
             junctions_gdf=gdfs.get("junctions"),
             pumps_gdf=gdfs.get("pumps"),
             storage_gdf=gdfs.get("storage"),
+            issues=unfixed_issues,
+            network_result=network,
+            selected_ids=map_selection,
             visible_layers=visible_layers,
-            zoom_bounds=zoom_bounds,
-            network_result=network,
-        )
-        m = add_issues_to_map(
-            m, unfixed_issues,
-            pipes_gdf=gdfs.get("pipes"),
-            junctions_gdf=gdfs.get("junctions"),
-            network_result=network,
-            visible_layers=visible_layers,
-            add_layer_control=False,
-        )
-        # Add resolved issues layer (green, muted)
-        m = add_resolved_issues_to_map(
-            m, fixed_issues,
-            pipes_gdf=gdfs.get("pipes"),
-            junctions_gdf=gdfs.get("junctions"),
-            network_result=network,
-            visible=st.session_state.get("vis_resolved", True),
+            fixed_issues=fixed_issues,
         )
 
-        # Add selection highlights (ArcGIS Pro-style cyan)
-        map_selection = st.session_state.get("map_selection", set())
-        m = add_selection_layer(m, map_selection, gdfs.get("pipes"), gdfs.get("junctions"))
+        # Render map with click selection
+        map_result = st.pydeck_chart(
+            deck,
+            height=620,
+            on_select="rerun",
+            selection_mode="single-object",
+            key="main_map",
+        )
 
-        # ── Box Select: Draw plugin with rectangle tool always available ──
-        from folium.plugins import Draw
-        Draw(
-            export=False,
-            draw_options={
-                "rectangle": {
-                    "shapeOptions": {
-                        "color": "#00FFFF",
-                        "weight": 2,
-                        "fillColor": "#00FFFF",
-                        "fillOpacity": 0.15,
-                    },
-                },
-                "polyline": False,
-                "polygon": False,
-                "circle": False,
-                "marker": False,
-                "circlemarker": False,
-            },
-            edit_options={"edit": False, "remove": False},
-        ).add_to(m)
-
-        # Render interactive map, preserving zoom/center across selection reruns
-        render_key = st.session_state.get("_map_render_key", 0)
-        saved_center = st.session_state.pop("_map_center", None)
-        saved_zoom = st.session_state.pop("_map_zoom", None)
-        folium_kwargs = dict(height=620, use_container_width=True,
-                             key=f"main_map_{render_key}")
-        if saved_center and saved_zoom is not None:
-            folium_kwargs["center"] = saved_center
-            folium_kwargs["zoom"] = saved_zoom
-        map_result = st_folium(m, **folium_kwargs)
-
-        # ── Process drawn rectangles (Box Select) ──
-        if map_result and st.session_state.get("select_on_map", False):
-            # Check all_drawings first (list), then last_active_drawing
-            all_drawings = map_result.get("all_drawings") or []
-            drawing = all_drawings[-1] if all_drawings else map_result.get("last_active_drawing")
-            if drawing and drawing != st.session_state.get("_last_processed_drawing"):
-                # Handle various drawing formats from streamlit-folium
-                geom = drawing.get("geometry", drawing)
-                geom_type = geom.get("type", "")
-                if geom_type in ("Polygon", "Rectangle") or "coordinates" in geom:
-                    st.session_state["_last_processed_drawing"] = drawing
-                    coords = geom["coordinates"][0]  # GeoJSON [lon, lat]
-                    lons = [c[0] for c in coords]
-                    lats = [c[1] for c in coords]
-                    bbox = shapely_box(min(lons), min(lats), max(lons), max(lats))
-
-                    found_ids = set()
-                    gdfs_4326 = st.session_state.get("gdfs_4326", {})
-                    if "pipes" in gdfs_4326:
-                        p_gdf = gdfs_4326["pipes"]
-                        pid_col = p_gdf.columns[0]
-                        for _, row in p_gdf.iterrows():
-                            if row.geometry and not row.geometry.is_empty and bbox.intersects(row.geometry):
-                                found_ids.add(str(row[pid_col]))
-                    if "junctions" in gdfs_4326:
-                        j_gdf = gdfs_4326["junctions"]
-                        jid_col = j_gdf.columns[0]
-                        for _, row in j_gdf.iterrows():
-                            if row.geometry and not row.geometry.is_empty and bbox.intersects(row.geometry):
-                                found_ids.add(str(row[jid_col]))
-
-                    if found_ids:
-                        sel = st.session_state.get("map_selection", set())
-                        action = st.session_state.get("selection_action", "Add to Selection")
-                        if action == "Add to Selection":
-                            sel |= found_ids
-                        else:
-                            sel -= found_ids
-                        st.session_state["map_selection"] = sel
-                        _save_map_view(map_result)
-                        st.rerun()
-
-        # ── Handle clicks ──
-        if map_result:
-            click_data = map_result.get("last_object_clicked")
-            prev_click = st.session_state.get("_prev_map_click")
-            if click_data and click_data != prev_click:
-                st.session_state["_prev_map_click"] = click_data
-                tooltip = map_result.get("last_object_clicked_tooltip")
-                if tooltip:
-                    fid = tooltip.split(": ", 1)[1] if ": " in tooltip else tooltip
-
-                    if st.session_state.get("select_on_map", False):
-                        # ── Select mode: add/remove from selection ──
-                        sel = st.session_state.get("map_selection", set())
-                        action = st.session_state.get("selection_action", "Add to Selection")
-                        if action == "Add to Selection":
-                            sel.add(fid)
-                        else:
-                            sel.discard(fid)
-                        st.session_state["map_selection"] = sel
+        # Handle selection from map click
+        if map_result and map_result.selection:
+            objects = map_result.selection.get("objects", {})
+            # Flatten all selected objects from any layer
+            selected_objects = []
+            for layer_objects in objects.values():
+                selected_objects.extend(layer_objects)
+            if selected_objects:
+                clicked_name = selected_objects[0].get("name", "")
+                # Strip issue prefix if present (e.g. "Adverse Slope: GM_123" -> "GM_123")
+                if ": " in clicked_name:
+                    clicked_name = clicked_name.split(": ", 1)[1]
+                if clicked_name:
+                    sel = st.session_state.get("map_selection", set())
+                    if clicked_name in sel:
+                        sel.discard(clicked_name)
                     else:
-                        # ── Inspect mode: show feature details ──
-                        st.session_state["inspected_feature"] = fid
-                    _save_map_view(map_result)
-                    st.rerun()
+                        sel.add(clicked_name)
+                    st.session_state["map_selection"] = sel
+                    st.session_state["inspected_feature"] = clicked_name
 
     with detail_col:
         inspected_fid = st.session_state.get("inspected_feature")
@@ -1028,7 +808,6 @@ else:
                     )
                     if bounds:
                         st.session_state["zoom_bounds"] = bounds
-                        st.session_state["_map_render_key"] += 1
                         st.rerun()
             with btn_c2:
                 sel_label = "Remove" if in_sel else "Select"
@@ -1266,7 +1045,7 @@ else:
         else:
             # ── No feature selected: Issues Summary ──
             st.markdown("#### Issues Summary")
-            render_issues_summary(filtered_issues)
+            st.markdown(render_issues_summary_html(filtered_issues), unsafe_allow_html=True)
 
             if filtered_issues:
                 st.markdown("---")
@@ -1287,11 +1066,9 @@ else:
                     )
                     if bounds and bounds != st.session_state.get("zoom_bounds"):
                         st.session_state["zoom_bounds"] = bounds
-                        st.session_state["_map_render_key"] += 1
                         st.rerun()
                 elif st.session_state.get("zoom_bounds") is not None:
                     st.session_state["zoom_bounds"] = None
-                    st.session_state["_map_render_key"] += 1
                     st.rerun()
 
             st.markdown(
@@ -1356,7 +1133,6 @@ else:
                 with sel_col2:
                     if st.button("🔄 Reset Zoom", width="stretch"):
                         st.session_state["zoom_bounds"] = None
-                        st.session_state["_map_render_key"] += 1
                         st.rerun()
                 with sel_col3:
                     st.caption(f"{len(selected_rows)} issue(s) selected")
