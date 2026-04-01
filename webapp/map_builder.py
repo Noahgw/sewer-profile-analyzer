@@ -508,6 +508,105 @@ def add_issues_to_map(m, issues, pipes_gdf=None, junctions_gdf=None, network_res
     return m
 
 
+def add_resolved_issues_to_map(m, issues, pipes_gdf=None, junctions_gdf=None,
+                                network_result=None, visible=True):
+    """
+    Add a 'Resolved Issues' layer with muted green styling for issues
+    that have been addressed via the edit ledger.
+
+    All elements are non-interactive (visual only).
+    """
+    if not issues:
+        return m
+
+    RESOLVED_COLOR = "#4CAF50"  # muted green
+
+    # ── Build coordinate lookups (same as add_issues_to_map) ──
+    node_coords = {}
+    if network_result and "graph" in network_result:
+        G = network_result["graph"]
+        for nid in G.nodes:
+            attrs = G.nodes[nid] if hasattr(G, 'degree') else G._nodes[nid]
+            coords = attrs.get("coords")
+            if coords:
+                node_coords[nid] = coords
+
+    if junctions_gdf is not None and len(junctions_gdf) > 0:
+        juncs_wgs = _ensure_wgs84(junctions_gdf)
+        for idx, row in juncs_wgs.iterrows():
+            latlon = _extract_point_latlon(row.geometry)
+            if latlon:
+                fid = str(row.get(juncs_wgs.columns[0], idx))
+                node_coords[fid] = (latlon[1], latlon[0])
+
+    pipe_geoms = {}
+    if pipes_gdf is not None and len(pipes_gdf) > 0:
+        pipes_wgs = _ensure_wgs84(pipes_gdf)
+        for idx, row in pipes_wgs.iterrows():
+            pid = str(row.get(pipes_wgs.columns[0], idx))
+            if row.geometry and not row.geometry.is_empty:
+                pipe_geoms[pid] = row.geometry
+
+    count = len(issues)
+    layer = folium.FeatureGroup(
+        name=f'<span style="color:{RESOLVED_COLOR};font-weight:bold;">&#10004;</span> Resolved Issues ({count})',
+        show=visible,
+    )
+
+    for issue in issues:
+        itype = issue.issue_type
+        # ── Pipe issues: dashed green line ──
+        if itype in PIPE_ISSUE_TYPES:
+            pid = str(issue.feature_id)
+            if pid in pipe_geoms:
+                coords = _extract_line_coords(pipe_geoms[pid])
+                if not coords:
+                    continue
+                line = folium.PolyLine(
+                    coords, color=RESOLVED_COLOR, weight=5, opacity=0.6,
+                    dash_array="8 6",
+                )
+                line.options["interactive"] = False
+                line.add_to(layer)
+                continue
+
+        # ── Node issues: green ring marker ──
+        node_id = str(issue.feature_id)
+        details = issue.details or {}
+        check_nodes = [node_id]
+        for key in ("us_node", "ds_node", "junction_id"):
+            if key in details:
+                check_nodes.append(str(details[key]))
+
+        placed = False
+        for nid in check_nodes:
+            if nid in node_coords:
+                c = node_coords[nid]
+                lat, lon = c[1], c[0]
+                marker = folium.CircleMarker(
+                    location=[lat, lon], radius=12,
+                    color=RESOLVED_COLOR, weight=2, fill=True,
+                    fill_color=RESOLVED_COLOR, fill_opacity=0.2,
+                )
+                marker.options["interactive"] = False
+                marker.add_to(layer)
+                placed = True
+                break
+
+        if not placed and issue.coordinates:
+            lat, lon = issue.coordinates[1], issue.coordinates[0]
+            marker = folium.CircleMarker(
+                location=[lat, lon], radius=12,
+                color=RESOLVED_COLOR, weight=2, fill=True,
+                fill_color=RESOLVED_COLOR, fill_opacity=0.2,
+            )
+            marker.options["interactive"] = False
+            marker.add_to(layer)
+
+    layer.add_to(m)
+    return m
+
+
 def get_feature_bounds(feature_ids, pipes_gdf=None, junctions_gdf=None, network_result=None):
     """
     Given a list of feature IDs, return [[lat_min, lon_min], [lat_max, lon_max]]

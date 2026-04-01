@@ -33,8 +33,8 @@ from webapp.ingest_gpd import (
 from src.network_builder import build_network
 from src.profile_analyzer import run_full_analysis, trace_profile
 from webapp.map_builder import (
-    build_base_map, add_issues_to_map, add_selection_layer,
-    ISSUE_COLORS, ISSUE_DISPLAY_NAMES, get_feature_bounds
+    build_base_map, add_issues_to_map, add_resolved_issues_to_map,
+    add_selection_layer, ISSUE_COLORS, ISSUE_DISPLAY_NAMES, get_feature_bounds
 )
 from webapp.fix_toolkit import (
     LedgerEntry, apply_group, undo_last_group, get_current_value,
@@ -464,6 +464,73 @@ with st.sidebar:
         pumps_files = upload_shapefile("Pumps", "pumps_upload")
         storage_files = upload_shapefile("Storage", "storage_upload")
 
+        # ── Coordinate System ──
+        st.markdown("**Coordinate System**")
+        CRS_OPTIONS = {
+            "Auto-detect from .prj": None,
+            "NAD83 / State Plane (ft) — search below": "custom",
+            "WGS 84 (EPSG:4326)": "EPSG:4326",
+            "NAD83 (EPSG:4269)": "EPSG:4269",
+            "NAD83 / UTM zone 10N (EPSG:26910)": "EPSG:26910",
+            "NAD83 / UTM zone 11N (EPSG:26911)": "EPSG:26911",
+            "NAD83 / UTM zone 12N (EPSG:26912)": "EPSG:26912",
+            "NAD83 / UTM zone 13N (EPSG:26913)": "EPSG:26913",
+            "NAD83 / UTM zone 14N (EPSG:26914)": "EPSG:26914",
+            "NAD83 / UTM zone 15N (EPSG:26915)": "EPSG:26915",
+            "NAD83 / UTM zone 16N (EPSG:26916)": "EPSG:26916",
+            "NAD83 / UTM zone 17N (EPSG:26917)": "EPSG:26917",
+            "NAD83 / UTM zone 18N (EPSG:26918)": "EPSG:26918",
+            "NAD83 / UTM zone 19N (EPSG:26919)": "EPSG:26919",
+            "NAD83 / California zone 5 ftUS (EPSG:2229)": "EPSG:2229",
+            "NAD83 / California zone 6 ftUS (EPSG:2230)": "EPSG:2230",
+            "NAD83 / Texas South Central ftUS (EPSG:2278)": "EPSG:2278",
+            "NAD83 / Florida East ftUS (EPSG:2236)": "EPSG:2236",
+            "NAD83 / Florida West ftUS (EPSG:2237)": "EPSG:2237",
+            "NAD83 / New York Long Island ftUS (EPSG:2263)": "EPSG:2263",
+            "NAD83 / Pennsylvania South ftUS (EPSG:2272)": "EPSG:2272",
+            "NAD83 / Ohio South ftUS (EPSG:3735)": "EPSG:3735",
+            "NAD83 / Georgia West ftUS (EPSG:2240)": "EPSG:2240",
+            "NAD83 / Virginia North ftUS (EPSG:2283)": "EPSG:2283",
+            "NAD83 / Virginia South ftUS (EPSG:2284)": "EPSG:2284",
+            "NAD83 / North Carolina ftUS (EPSG:2264)": "EPSG:2264",
+            "NAD83 / Colorado North ftUS (EPSG:2231)": "EPSG:2231",
+            "NAD83 / Illinois East ftUS (EPSG:3435)": "EPSG:3435",
+            "NAD83 / Illinois West ftUS (EPSG:3436)": "EPSG:3436",
+            "NAD83 / Washington North ftUS (EPSG:2285)": "EPSG:2285",
+            "NAD83 / Washington South ftUS (EPSG:2286)": "EPSG:2286",
+            "NAD83 / Oregon North ftIntl (EPSG:2338)": "EPSG:2338",
+            "NAD83 / Oregon South ftIntl (EPSG:2339)": "EPSG:2339",
+        }
+        crs_choice = st.selectbox(
+            "Select CRS",
+            options=list(CRS_OPTIONS.keys()),
+            index=0,
+            key="crs_select",
+            help="Set the coordinate system of your shapefiles. Use Auto-detect if your upload includes a .prj file.",
+        )
+        selected_crs = CRS_OPTIONS[crs_choice]
+
+        # Custom EPSG code entry for State Plane or other systems
+        custom_epsg = None
+        if selected_crs == "custom":
+            custom_epsg = st.text_input(
+                "Enter EPSG code",
+                placeholder="e.g. 2229",
+                key="custom_epsg_input",
+                help="Look up your State Plane EPSG code at epsg.io",
+            )
+            if custom_epsg:
+                custom_epsg = custom_epsg.strip()
+                if not custom_epsg.startswith("EPSG:"):
+                    custom_epsg = f"EPSG:{custom_epsg}"
+
+    # Resolve the CRS to apply
+    _user_crs = None
+    if selected_crs == "custom":
+        _user_crs = custom_epsg  # may be None if not entered yet
+    elif selected_crs is not None:
+        _user_crs = selected_crs
+
     # Process uploads
     gdfs = {}
     for ftype, files, required in [
@@ -475,14 +542,21 @@ with st.sidebar:
         if files:
             try:
                 gdf = read_shapefile_from_upload(files)
+                # Apply user-selected CRS: override if specified, otherwise keep auto-detected
+                if _user_crs:
+                    gdf = gdf.set_crs(_user_crs, allow_override=True)
                 gdfs[ftype] = gdf
             except Exception as e:
                 st.sidebar.error(f"{ftype}: {e}")
 
-    # Show loaded counts
+    # Show loaded counts and CRS info
     if gdfs:
         loaded = ", ".join(f"{k}: {len(v)}" for k, v in gdfs.items())
+        # Show the active CRS from the first loaded GDF
+        _first_gdf = next(iter(gdfs.values()))
+        _crs_info = str(_first_gdf.crs) if _first_gdf.crs else "Unknown"
         st.caption(f"Loaded: {loaded}")
+        st.caption(f"CRS: {_crs_info}")
 
     # ── Field Mapping ──
     mappings = {}
@@ -588,6 +662,13 @@ with st.sidebar:
                         display,
                         value=True,
                         key=f"vis_issue_{itype}",
+                    )
+                # Resolved issues toggle (only show if there are fixes in the ledger)
+                if st.session_state.get("edit_ledger"):
+                    st.checkbox(
+                        "✔ Resolved Issues",
+                        value=True,
+                        key="vis_resolved",
                     )
 
         # ── Selection Tools (ArcGIS Pro-style) ──
@@ -704,6 +785,12 @@ else:
         if i.issue_type in type_filter
     ]
 
+    # ── Split into unfixed / fixed based on edit ledger ──
+    ledger = st.session_state.get("edit_ledger", [])
+    edited_feature_ids = set(e.feature_id for e in ledger) if ledger else set()
+    unfixed_issues = [i for i in filtered_issues if str(i.feature_id) not in edited_feature_ids]
+    fixed_issues = [i for i in filtered_issues if str(i.feature_id) in edited_feature_ids]
+
     # ── Build visible_layers dict from sidebar checkboxes ──
     visible_layers = {
         "Pipes": st.session_state.get("vis_pipes", True),
@@ -711,8 +798,8 @@ else:
         "Pumps": st.session_state.get("vis_pumps", True),
         "Storage": st.session_state.get("vis_storage", True),
     }
-    # Add issue layer visibility
-    for itype in set(i.issue_type for i in filtered_issues):
+    # Add issue layer visibility (unfixed only)
+    for itype in set(i.issue_type for i in unfixed_issues):
         display = ISSUE_DISPLAY_NAMES.get(itype, itype.replace("_", " ").title())
         visible_layers[display] = st.session_state.get(f"vis_issue_{itype}", True)
 
@@ -750,12 +837,20 @@ else:
             network_result=network,
         )
         m = add_issues_to_map(
-            m, filtered_issues,
+            m, unfixed_issues,
             pipes_gdf=gdfs.get("pipes"),
             junctions_gdf=gdfs.get("junctions"),
             network_result=network,
             visible_layers=visible_layers,
             add_layer_control=False,
+        )
+        # Add resolved issues layer (green, muted)
+        m = add_resolved_issues_to_map(
+            m, fixed_issues,
+            pipes_gdf=gdfs.get("pipes"),
+            junctions_gdf=gdfs.get("junctions"),
+            network_result=network,
+            visible=st.session_state.get("vis_resolved", True),
         )
 
         # Add selection highlights (ArcGIS Pro-style cyan)
