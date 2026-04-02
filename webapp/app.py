@@ -17,10 +17,7 @@ import sys
 import io
 import zipfile
 import json
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.patches import FancyArrowPatch
-import numpy as np
+import plotly.graph_objects as go
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from webapp.ingest_gpd import (
@@ -116,27 +113,31 @@ if "_last_sel_name" not in st.session_state:
 if "_show_profile" not in st.session_state:
     st.session_state["_show_profile"] = False
 
-# ── Process pending map click early so all UI sees updated state ──
-_pending = st.session_state.get("main_map", None)
-if _pending and hasattr(_pending, "selection") and _pending.selection:
-    _objs = _pending.selection.get("objects", {})
-    _sel_list = []
-    for _lo in _objs.values():
-        _sel_list.extend(_lo)
-    if _sel_list:
-        _cname = _sel_list[0].get("name", "")
-        if ": " in _cname:
-            _cname = _cname.split(": ", 1)[1]
-        if _cname and _cname != st.session_state.get("_last_sel_name"):
-            st.session_state["_last_sel_name"] = _cname
-            st.session_state["inspected_feature"] = _cname
-            if st.session_state.get("multi_select_mode", False):
-                _sel = st.session_state.get("map_selection", set())
-                if _cname in _sel:
-                    _sel.discard(_cname)
-                else:
-                    _sel.add(_cname)
-                st.session_state["map_selection"] = _sel
+def _process_map_click():
+    """Process pending pydeck click from session state."""
+    _pending = st.session_state.get("main_map", None)
+    if _pending and hasattr(_pending, "selection") and _pending.selection:
+        _objs = _pending.selection.get("objects", {})
+        _sel_list = []
+        for _lo in _objs.values():
+            _sel_list.extend(_lo)
+        if _sel_list:
+            _cname = _sel_list[0].get("name", "")
+            if ": " in _cname:
+                _cname = _cname.split(": ", 1)[1]
+            if _cname and _cname != st.session_state.get("_last_sel_name"):
+                st.session_state["_last_sel_name"] = _cname
+                st.session_state["inspected_feature"] = _cname
+                if st.session_state.get("multi_select_mode", False):
+                    _sel = st.session_state.get("map_selection", set())
+                    if _cname in _sel:
+                        _sel.discard(_cname)
+                    else:
+                        _sel.add(_cname)
+                    st.session_state["map_selection"] = _sel
+
+# Process on full reruns (sidebar count etc.)
+_process_map_click()
 
 
 # ════════════════════════════════════════════════════════════
@@ -195,11 +196,12 @@ def render_metric_bar(issues, stats):
     st.markdown(html, unsafe_allow_html=True)
 
 
-def build_profile_figure(selected_ids, network, gdfs, issues, ledger=None):
-    """Build a matplotlib profile view for selected pipes/junctions.
+def build_profile_plotly(selected_ids, network, gdfs, issues, ledger=None):
+    """Build an interactive Plotly profile view for selected pipes/junctions.
 
-    Shows pipe inverts as sloped lines with diameter indicated,
-    junction rim/invert elevations, and highlights issues.
+    Shows pipe inverts as filled bands with diameter, manhole rectangles from
+    invert to rim, pipe penetration markers at manhole walls, and highlights
+    issues. Returns a plotly.graph_objects.Figure.
     """
     G = network["graph"]
 
@@ -214,7 +216,6 @@ def build_profile_figure(selected_ids, network, gdfs, issues, ledger=None):
         return None
 
     # Build ordered chain: try to connect pipes end-to-end
-    node_order = []
     edge_map = {}  # (u, v) -> data
     adj_out = {}   # node -> [(next_node, edge_data)]
     for u, v, data in pipe_edges:
@@ -243,7 +244,6 @@ def build_profile_figure(selected_ids, network, gdfs, issues, ledger=None):
         ordered_edges = [(u, v, d) for u, v, d in pipe_edges[:20]]
 
     # Build profile data
-    stations = []  # cumulative distance
     cumulative = 0.0
     profile_nodes = []  # (station, node_id, node_data)
     profile_pipes = []  # (start_station, end_station, edge_data)
@@ -267,15 +267,43 @@ def build_profile_figure(selected_ids, network, gdfs, issues, ledger=None):
         fid = str(iss.feature_id)
         issue_map.setdefault(fid, []).append(iss)
 
-    # ── Plot ──
-    fig, ax = plt.subplots(figsize=(14, 5))
-    fig.patch.set_facecolor("#0e1117")
-    ax.set_facecolor("#0e1117")
-
     if ledger is None:
         ledger = []
 
-    # Draw pipes as sloped bands showing diameter
+    BG = "#0e1117"
+    GRID_COLOR = "#2a2a3a"
+    TEXT_COLOR = "#cccccc"
+    AXIS_COLOR = "#888888"
+
+    # Manhole visual half-width: 2% of total station range, min 3 ft
+    total_range = cumulative if cumulative > 0 else 1.0
+    mh_half_w = max(total_range * 0.015, 3.0)
+
+    fig = go.Figure()
+
+    # ── Ground surface (rim elevations) ──
+    rim_stations = []
+    rim_elevations = []
+    for sta, nid, ndata in profile_nodes:
+        rim = ndata.get("rim_elev")
+        if rim is not None:
+            rim_stations.append(sta)
+            rim_elevations.append(float(rim))
+
+    if len(rim_stations) >= 2:
+        fig.add_trace(go.Scatter(
+            x=rim_stations,
+            y=rim_elevations,
+            mode="lines",
+            name="Ground Surface",
+            line=dict(color="#8B6914", width=2),
+            fill="toself",
+            fillcolor="rgba(139,105,20,0.06)",
+            hoverinfo="skip",
+            showlegend=True,
+        ))
+
+    # ── Pipes ──
     for start_sta, end_sta, edata in profile_pipes:
         us_inv_orig = edata.get("us_invert")
         ds_inv_orig = edata.get("ds_invert")
@@ -288,135 +316,344 @@ def build_profile_figure(selected_ids, network, gdfs, issues, ledger=None):
         us_inv_orig = float(us_inv_orig)
         ds_inv_orig = float(ds_inv_orig)
 
-        # Apply ledger edits
         us_inv = get_current_value(ledger, pid, "us_invert", us_inv_orig)
         ds_inv = get_current_value(ledger, pid, "ds_invert", ds_inv_orig)
         was_edited = (us_inv != us_inv_orig or ds_inv != ds_inv_orig)
         dia_ft = float(diameter_in) / 12.0 if diameter_in else 0.5
 
-        # Pipe invert line (bottom of pipe)
         pipe_issues = issue_map.get(pid, [])
         has_adverse = any(i.issue_type == "ADVERSE_SLOPE" for i in pipe_issues)
-        has_dia_decrease = any(i.issue_type == "DIAMETER_DECREASE" for i in pipe_issues)
+        has_dia_dec = any(i.issue_type == "DIAMETER_DECREASE" for i in pipe_issues)
 
-        if has_adverse:
+        if was_edited:
+            color = "#00CC66"
+        elif has_adverse:
             color = "#FF4444"
-            lw = 2.5
-        elif has_dia_decrease:
+        elif has_dia_dec:
             color = "#FF8C00"
-            lw = 2.5
         else:
             color = "#4A90D9"
-            lw = 1.5
 
-        # If edited, draw original as faded ghost
+        # Ghost of original when edited
         if was_edited:
-            orig_inverts = [us_inv_orig, ds_inv_orig]
-            orig_crowns = [us_inv_orig + dia_ft, ds_inv_orig + dia_ft]
-            ax.plot([start_sta, end_sta], orig_inverts, color="#888888",
-                    linewidth=1, linestyle=":", alpha=0.5, zorder=2)
-            ax.plot([start_sta, end_sta], orig_crowns, color="#888888",
-                    linewidth=0.5, linestyle=":", alpha=0.3, zorder=2)
-            color = "#00CC66"  # Green for edited pipes
-            lw = 2.5
+            ghost_xs = [start_sta, end_sta, end_sta, start_sta, start_sta]
+            ghost_ys = [
+                us_inv_orig, ds_inv_orig,
+                ds_inv_orig + dia_ft, us_inv_orig + dia_ft,
+                us_inv_orig,
+            ]
+            fig.add_trace(go.Scatter(
+                x=ghost_xs,
+                y=ghost_ys,
+                mode="lines",
+                fill="toself",
+                fillcolor="rgba(136,136,136,0.10)",
+                line=dict(color="#888888", width=1, dash="dot"),
+                name="Original (before fix)",
+                showlegend=False,
+                hoverinfo="skip",
+            ))
 
-        # Draw pipe as a band (invert to crown)
-        xs = [start_sta, end_sta]
-        inverts = [us_inv, ds_inv]
-        crowns = [us_inv + dia_ft, ds_inv + dia_ft]
+        # Filled pipe band (invert to crown) — polygon closed
+        band_xs = [start_sta, end_sta, end_sta, start_sta, start_sta]
+        band_ys = [us_inv, ds_inv, ds_inv + dia_ft, us_inv + dia_ft, us_inv]
 
-        ax.fill_between(xs, inverts, crowns, alpha=0.2, color=color)
-        ax.plot(xs, inverts, color=color, linewidth=lw, solid_capstyle="round")
-        ax.plot(xs, crowns, color=color, linewidth=0.8, linestyle="--", alpha=0.5)
+        r, g, b = (
+            int(color[1:3], 16),
+            int(color[3:5], 16),
+            int(color[5:7], 16),
+        )
+        fill_rgba = f"rgba({r},{g},{b},0.20)"
 
-        # Label pipe
-        mid_x = (start_sta + end_sta) / 2
-        mid_y = (us_inv + ds_inv) / 2 + dia_ft + 0.3
-        label = f'{pid}'
-        if diameter_in:
-            label += f'\n{diameter_in}"'
         slope = edata.get("slope")
         if slope is not None:
-            label += f"\n{float(slope):.4f}"
-        elif us_inv and ds_inv and (end_sta - start_sta) > 0:
+            calc_slope = float(slope)
+        elif (end_sta - start_sta) > 0:
             calc_slope = (us_inv - ds_inv) / (end_sta - start_sta)
-            label += f"\n{calc_slope:.4f}"
+        else:
+            calc_slope = 0.0
 
-        ax.text(mid_x, mid_y, label, ha="center", va="bottom",
-                fontsize=7, color="#cccccc", alpha=0.9)
+        hover_txt = (
+            f"<b>Pipe {pid}</b><br>"
+            f"Diameter: {diameter_in}\"<br>" if diameter_in else f"<b>Pipe {pid}</b><br>"
+        )
+        hover_txt += (
+            f"US invert: {us_inv:.3f} ft<br>"
+            f"DS invert: {ds_inv:.3f} ft<br>"
+            f"Slope: {calc_slope:.4f}<br>"
+            f"Length: {end_sta - start_sta:.1f} ft"
+        )
 
-    # Draw ground surface line (rim elevations)
-    rim_stations = []
-    rim_elevations = []
+        fig.add_trace(go.Scatter(
+            x=band_xs,
+            y=band_ys,
+            mode="lines",
+            fill="toself",
+            fillcolor=fill_rgba,
+            line=dict(color=color, width=2),
+            name=f"Pipe {pid}",
+            hovertemplate=hover_txt + "<extra></extra>",
+            showlegend=False,
+        ))
+
+        # Crown dashed line
+        fig.add_trace(go.Scatter(
+            x=[start_sta, end_sta],
+            y=[us_inv + dia_ft, ds_inv + dia_ft],
+            mode="lines",
+            line=dict(color=color, width=0.8, dash="dash"),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+
+        # Pipe label annotation at midpoint above crown
+        mid_x = (start_sta + end_sta) / 2
+        mid_crown = max(us_inv, ds_inv) + dia_ft
+        label_parts = [pid]
+        if diameter_in:
+            label_parts.append(f'{diameter_in}"')
+        label_parts.append(f"{calc_slope:.4f}")
+        label_text = "<br>".join(label_parts)
+
+        fig.add_annotation(
+            x=mid_x,
+            y=mid_crown + 0.25,
+            text=label_text,
+            showarrow=False,
+            font=dict(size=9, color=TEXT_COLOR),
+            align="center",
+            bgcolor="rgba(14,17,23,0.6)",
+            borderpad=2,
+        )
+
+    # ── Manholes ──
+    # Build a lookup: station -> (node_id, node_data) for penetration marker logic
+    node_station_map = {nid: sta for sta, nid, _ in profile_nodes}
+
     for sta, nid, ndata in profile_nodes:
-        rim = ndata.get("rim_elev")
-        if rim is not None:
-            rim_stations.append(sta)
-            rim_elevations.append(float(rim))
-    if len(rim_stations) >= 2:
-        ax.plot(rim_stations, rim_elevations, color="#8B6914", linewidth=2,
-                linestyle="-", label="Ground Surface", zorder=3)
-        ax.fill_between(rim_stations, rim_elevations,
-                        [max(rim_elevations) + 2] * len(rim_stations),
-                        color="#8B6914", alpha=0.08)
-
-    # Draw junction markers
-    for sta, nid, ndata in profile_nodes:
-        rim = ndata.get("rim_elev")
+        rim_orig = ndata.get("rim_elev")
         inv_orig = ndata.get("invert_elev")
         inv = get_current_value(ledger, nid, "invert_elev", inv_orig)
 
         node_issues = issue_map.get(nid, [])
         has_depth_issue = any(i.issue_type in ("SHALLOW_STRUCTURE", "DEEP_STRUCTURE")
-                             for i in node_issues)
+                              for i in node_issues)
         has_mismatch = any(i.issue_type == "INVERT_MISMATCH" for i in node_issues)
+        has_issue = has_depth_issue or has_mismatch
 
-        marker_color = "#FF4444" if (has_depth_issue or has_mismatch) else "#00CC66"
+        mh_color = "#FF4444" if has_issue else "#5588aa"
+        mh_fill = "rgba(255,68,68,0.15)" if has_issue else "rgba(85,136,170,0.15)"
+        mh_border = "#FF4444" if has_issue else "#5588aa"
 
-        if rim is not None:
-            rim = float(rim)
-            ax.plot(sta, rim, "v", color=marker_color, markersize=8, zorder=5)
-            ax.text(sta, rim + 0.3, f"{rim:.1f}", ha="center", va="bottom",
-                    fontsize=6, color="#aaaaaa")
+        if rim_orig is None or inv is None:
+            # Fall back to a simple vertical line if missing elevation data
+            if rim_orig is not None or inv is not None:
+                y0 = float(inv) if inv is not None else float(rim_orig)
+                y1 = float(rim_orig) if rim_orig is not None else float(inv)
+                fig.add_trace(go.Scatter(
+                    x=[sta, sta],
+                    y=[y0, y1],
+                    mode="lines",
+                    line=dict(color=mh_color, width=1.5),
+                    hoverinfo="skip",
+                    showlegend=False,
+                ))
+            continue
 
-        if inv is not None:
-            inv = float(inv)
-            ax.plot(sta, inv, "^", color=marker_color, markersize=8, zorder=5)
-            ax.text(sta, inv - 0.5, f"{inv:.1f}", ha="center", va="top",
-                    fontsize=6, color="#aaaaaa")
+        rim = float(rim_orig)
+        inv_f = float(inv)
 
-        # Draw vertical structure line
-        if rim is not None and inv is not None:
-            line_color = "#FF4444" if (has_depth_issue or has_mismatch) else "#555555"
-            ax.plot([sta, sta], [inv, rim], color=line_color,
-                    linewidth=1.5, linestyle="-", alpha=0.6)
+        # Manhole rectangle: x from sta-half_w to sta+half_w, y from inv to rim
+        mh_xs = [
+            sta - mh_half_w, sta + mh_half_w,
+            sta + mh_half_w, sta - mh_half_w,
+            sta - mh_half_w,
+        ]
+        mh_ys = [inv_f, inv_f, rim, rim, inv_f]
 
-        # Node label
-        label_y = (float(rim) if rim else float(inv)) if (rim or inv) else 0
-        ax.text(sta, label_y + 0.8, nid, ha="center", va="bottom",
-                fontsize=7, color="#dddddd", fontweight="bold", rotation=45)
+        hover_mh = (
+            f"<b>MH {nid}</b><br>"
+            f"Rim: {rim:.3f} ft<br>"
+            f"Invert: {inv_f:.3f} ft<br>"
+            f"Depth: {rim - inv_f:.2f} ft"
+        )
+        if has_issue:
+            issue_labels = [i.issue_type for i in node_issues]
+            hover_mh += "<br><b>Issues: " + ", ".join(issue_labels) + "</b>"
 
-    # Styling
-    ax.set_xlabel("Station (ft)", color="#aaaaaa", fontsize=10)
-    ax.set_ylabel("Elevation (ft)", color="#aaaaaa", fontsize=10)
-    ax.tick_params(colors="#888888", labelsize=8)
-    ax.grid(True, alpha=0.15, color="#555555")
-    for spine in ax.spines.values():
-        spine.set_color("#333333")
+        fig.add_trace(go.Scatter(
+            x=mh_xs,
+            y=mh_ys,
+            mode="lines",
+            fill="toself",
+            fillcolor=mh_fill,
+            line=dict(color=mh_border, width=1.5),
+            name=f"MH {nid}",
+            hovertemplate=hover_mh + "<extra></extra>",
+            showlegend=False,
+        ))
 
-    # Legend
-    legend_items = [
-        mpatches.Patch(color="#8B6914", alpha=0.6, label="Ground surface (rim)"),
-        mpatches.Patch(color="#4A90D9", alpha=0.4, label="Pipe (normal)"),
-        mpatches.Patch(color="#FF4444", alpha=0.4, label="Adverse slope"),
-        mpatches.Patch(color="#FF8C00", alpha=0.4, label="Diameter decrease"),
-        mpatches.Patch(color="#00CC66", alpha=0.4, label="Edited (fix applied)"),
-        mpatches.Patch(color="#888888", alpha=0.3, label="Original (before fix)"),
+        # Rim elevation label above rectangle
+        fig.add_annotation(
+            x=sta,
+            y=rim + 0.15,
+            text=f"{rim:.1f}",
+            showarrow=False,
+            font=dict(size=8, color=AXIS_COLOR),
+            yanchor="bottom",
+        )
+
+        # Invert elevation label inside rectangle at bottom
+        fig.add_annotation(
+            x=sta,
+            y=inv_f - 0.15,
+            text=f"{inv_f:.1f}",
+            showarrow=False,
+            font=dict(size=8, color=AXIS_COLOR),
+            yanchor="top",
+        )
+
+        # Node ID label above rim
+        fig.add_annotation(
+            x=sta,
+            y=rim + 0.5,
+            text=f"<b>{nid}</b>",
+            showarrow=False,
+            font=dict(size=9, color="#dddddd"),
+            yanchor="bottom",
+            textangle=-45,
+        )
+
+    # ── Pipe penetration markers at manhole walls ──
+    # For each pipe, check the US and DS manhole inverts and flag mismatches
+    for start_sta, end_sta, edata in profile_pipes:
+        us_inv_orig = edata.get("us_invert")
+        ds_inv_orig = edata.get("ds_invert")
+        diameter_in = edata.get("diameter")
+        pid = str(edata.get("pipe_id", ""))
+
+        if us_inv_orig is None or ds_inv_orig is None:
+            continue
+
+        us_inv = get_current_value(ledger, pid, "us_invert", float(us_inv_orig))
+        ds_inv = get_current_value(ledger, pid, "ds_invert", float(ds_inv_orig))
+        dia_ft = float(diameter_in) / 12.0 if diameter_in else 0.5
+
+        # Find the upstream and downstream nodes for this pipe segment
+        us_node_data = None
+        ds_node_data = None
+        us_node_id = None
+        ds_node_id = None
+        for sta, nid, ndata in profile_nodes:
+            if abs(sta - start_sta) < 0.01:
+                us_node_data = ndata
+                us_node_id = nid
+            if abs(sta - end_sta) < 0.01:
+                ds_node_data = ndata
+                ds_node_id = nid
+
+        for (pipe_sta, pipe_inv, mh_ndata, mh_nid, side_label) in [
+            (start_sta + mh_half_w, us_inv, us_node_data, us_node_id, "US"),
+            (end_sta - mh_half_w, ds_inv, ds_node_data, ds_node_id, "DS"),
+        ]:
+            if mh_ndata is None:
+                continue
+            mh_inv_orig = mh_ndata.get("invert_elev")
+            if mh_inv_orig is None:
+                continue
+            mh_inv = get_current_value(ledger, mh_nid, "invert_elev", float(mh_inv_orig))
+
+            # Pipe is below manhole invert = problem (red), above = normal (blue)
+            pen_color = "#FF4444" if pipe_inv < mh_inv else "#4A90D9"
+
+            # Horizontal bar at the pipe invert height at the manhole wall
+            fig.add_trace(go.Scatter(
+                x=[pipe_sta - dia_ft * 0.3, pipe_sta + dia_ft * 0.3],
+                y=[pipe_inv, pipe_inv],
+                mode="lines",
+                line=dict(color=pen_color, width=3),
+                hovertemplate=(
+                    f"<b>{side_label} penetration — Pipe {pid}</b><br>"
+                    f"Pipe invert: {pipe_inv:.3f} ft<br>"
+                    f"MH invert: {mh_inv:.3f} ft<br>"
+                    f"{'BELOW MH INVERT' if pipe_inv < mh_inv else 'Normal'}"
+                    "<extra></extra>"
+                ),
+                showlegend=False,
+            ))
+
+            # Small diamond marker
+            fig.add_trace(go.Scatter(
+                x=[pipe_sta],
+                y=[pipe_inv + dia_ft / 2],
+                mode="markers",
+                marker=dict(symbol="diamond", size=6, color=pen_color,
+                            line=dict(color="#0e1117", width=1)),
+                hoverinfo="skip",
+                showlegend=False,
+            ))
+
+    # ── Legend traces (dummy scatter for legend entries) ──
+    legend_entries = [
+        ("Ground Surface", "#8B6914", "lines"),
+        ("Pipe (normal)", "#4A90D9", "lines"),
+        ("Adverse Slope", "#FF4444", "lines"),
+        ("Diameter Decrease", "#FF8C00", "lines"),
+        ("Edited (fix applied)", "#00CC66", "lines"),
+        ("Original (before fix)", "#888888", "lines"),
+        ("Penetration — normal", "#4A90D9", "markers"),
+        ("Penetration — below invert", "#FF4444", "markers"),
     ]
-    ax.legend(handles=legend_items, loc="upper right", fontsize=7,
-              facecolor="#1a1a2e", edgecolor="#333333", labelcolor="#cccccc")
+    for leg_name, leg_color, leg_mode in legend_entries:
+        marker_kw = dict(symbol="diamond", size=8, color=leg_color) if leg_mode == "markers" else {}
+        line_kw = dict(color=leg_color, width=3) if leg_mode == "lines" else {}
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],
+            mode=leg_mode,
+            name=leg_name,
+            marker=marker_kw if leg_mode == "markers" else dict(color=leg_color),
+            line=line_kw if leg_mode == "lines" else dict(color=leg_color),
+            showlegend=True,
+        ))
 
-    fig.tight_layout()
+    # ── Layout ──
+    fig.update_layout(
+        plot_bgcolor=BG,
+        paper_bgcolor=BG,
+        font=dict(color=TEXT_COLOR, size=11),
+        xaxis=dict(
+            title="Station (ft)",
+            title_font=dict(color=AXIS_COLOR),
+            tickfont=dict(color=AXIS_COLOR),
+            gridcolor=GRID_COLOR,
+            zerolinecolor=GRID_COLOR,
+            showgrid=True,
+        ),
+        yaxis=dict(
+            title="Elevation (ft)",
+            title_font=dict(color=AXIS_COLOR),
+            tickfont=dict(color=AXIS_COLOR),
+            gridcolor=GRID_COLOR,
+            zerolinecolor=GRID_COLOR,
+            showgrid=True,
+        ),
+        legend=dict(
+            bgcolor="rgba(26,26,46,0.85)",
+            bordercolor="#333333",
+            borderwidth=1,
+            font=dict(color=TEXT_COLOR, size=10),
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+        ),
+        margin=dict(l=60, r=20, t=60, b=50),
+        dragmode="zoom",
+        hovermode="closest",
+        height=480,
+    )
+
     return fig
 
 
@@ -743,348 +980,354 @@ else:
     # ── Metric Bar ──
     render_metric_bar(filtered_issues, stats)
 
-    # ── Main workspace: Map + Issue Summary side by side ──
-    map_col, detail_col = st.columns([3, 1])
+    # ── Main workspace: Map + Detail panel (fragment for fast clicks) ──
+    @st.fragment
+    def _map_fragment():
+        # Process pending click inside the fragment so it runs on fragment reruns too
+        _process_map_click()
 
-    with map_col:
-        # Build pydeck map (click already processed at top of script)
-        map_selection = st.session_state.get("map_selection", set())
-        deck = build_pydeck_map(
-            pipes_gdf=gdfs.get("pipes"),
-            junctions_gdf=gdfs.get("junctions"),
-            pumps_gdf=gdfs.get("pumps"),
-            storage_gdf=gdfs.get("storage"),
-            issues=unfixed_issues,
-            network_result=network,
-            selected_ids=map_selection,
-            visible_layers=visible_layers,
-            fixed_issues=fixed_issues,
-        )
+        map_col, detail_col = st.columns([3, 1])
 
-        # Render map
-        st.pydeck_chart(
-            deck,
-            height=620,
-            on_select="rerun",
-            selection_mode="single-object",
-            key="main_map",
-        )
-
-    with detail_col:
-        inspected_fid = st.session_state.get("inspected_feature")
-        map_sel = st.session_state.get("map_selection", set())
-
-        if inspected_fid:
-            # ── Look up feature ──
-            feature_type = None
-            feature_row = None
-
-            if "pipes" in gdfs:
-                pid_col = gdfs["pipes"].columns[0]
-                match = gdfs["pipes"][gdfs["pipes"][pid_col].astype(str) == str(inspected_fid)]
-                if len(match) > 0:
-                    feature_type = "pipes"
-                    feature_row = match.iloc[0]
-
-            if feature_row is None and "junctions" in gdfs:
-                jid_col = gdfs["junctions"].columns[0]
-                match = gdfs["junctions"][gdfs["junctions"][jid_col].astype(str) == str(inspected_fid)]
-                if len(match) > 0:
-                    feature_type = "junctions"
-                    feature_row = match.iloc[0]
-
-            # Header with selection indicator
-            type_label = "Pipe" if feature_type == "pipes" else "Junction" if feature_type == "junctions" else "Feature"
-            type_icon = "🔵" if feature_type == "pipes" else "🟢" if feature_type == "junctions" else "📍"
-            in_sel = str(inspected_fid) in map_sel
-            sel_badge = ' <span style="background:#00FFFF;color:#000;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;">SELECTED</span>' if in_sel else ""
-
-            st.markdown(
-                f"{type_icon} **{type_label}**: {inspected_fid}{sel_badge}",
-                unsafe_allow_html=True,
+        with map_col:
+            map_selection = st.session_state.get("map_selection", set())
+            deck = build_pydeck_map(
+                pipes_gdf=gdfs.get("pipes"),
+                junctions_gdf=gdfs.get("junctions"),
+                pumps_gdf=gdfs.get("pumps"),
+                storage_gdf=gdfs.get("storage"),
+                issues=unfixed_issues,
+                network_result=network,
+                selected_ids=map_selection,
+                visible_layers=visible_layers,
+                fixed_issues=fixed_issues,
             )
 
-            # Action buttons at top
-            btn_c1, btn_c2 = st.columns(2)
-            with btn_c1:
-                if st.button("🔍 Zoom", key="zoom_inspected", width="stretch"):
-                    bounds = get_feature_bounds(
-                        [inspected_fid],
-                        pipes_gdf=gdfs.get("pipes"),
-                        junctions_gdf=gdfs.get("junctions"),
-                        network_result=network,
-                    )
-                    if bounds:
-                        st.session_state["zoom_bounds"] = bounds
+            # Render map
+            st.pydeck_chart(
+                deck,
+                height=620,
+                on_select="rerun",
+                selection_mode="single-object",
+                key="main_map",
+            )
+
+        with detail_col:
+            inspected_fid = st.session_state.get("inspected_feature")
+            map_sel = st.session_state.get("map_selection", set())
+
+            if inspected_fid:
+                # ── Look up feature ──
+                feature_type = None
+                feature_row = None
+
+                if "pipes" in gdfs:
+                    pid_col = gdfs["pipes"].columns[0]
+                    match = gdfs["pipes"][gdfs["pipes"][pid_col].astype(str) == str(inspected_fid)]
+                    if len(match) > 0:
+                        feature_type = "pipes"
+                        feature_row = match.iloc[0]
+
+                if feature_row is None and "junctions" in gdfs:
+                    jid_col = gdfs["junctions"].columns[0]
+                    match = gdfs["junctions"][gdfs["junctions"][jid_col].astype(str) == str(inspected_fid)]
+                    if len(match) > 0:
+                        feature_type = "junctions"
+                        feature_row = match.iloc[0]
+
+                # Header with selection indicator
+                type_label = "Pipe" if feature_type == "pipes" else "Junction" if feature_type == "junctions" else "Feature"
+                type_icon = "🔵" if feature_type == "pipes" else "🟢" if feature_type == "junctions" else "📍"
+                in_sel = str(inspected_fid) in map_sel
+                sel_badge = ' <span style="background:#00FFFF;color:#000;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;">SELECTED</span>' if in_sel else ""
+
+                st.markdown(
+                    f"{type_icon} **{type_label}**: {inspected_fid}{sel_badge}",
+                    unsafe_allow_html=True,
+                )
+
+                # Action buttons at top
+                btn_c1, btn_c2 = st.columns(2)
+                with btn_c1:
+                    if st.button("🔍 Zoom", key="zoom_inspected", width="stretch"):
+                        bounds = get_feature_bounds(
+                            [inspected_fid],
+                            pipes_gdf=gdfs.get("pipes"),
+                            junctions_gdf=gdfs.get("junctions"),
+                            network_result=network,
+                        )
+                        if bounds:
+                            st.session_state["zoom_bounds"] = bounds
+                            st.rerun()
+                with btn_c2:
+                    sel_label = "Remove" if in_sel else "Select"
+                    if st.button(f"{'✕' if in_sel else '＋'} {sel_label}", key="toggle_inspected_sel", width="stretch"):
+                        sel = st.session_state.get("map_selection", set())
+                        if in_sel:
+                            sel.discard(str(inspected_fid))
+                        else:
+                            sel.add(str(inspected_fid))
+                        st.session_state["map_selection"] = sel
                         st.rerun()
-            with btn_c2:
-                sel_label = "Remove" if in_sel else "Select"
-                if st.button(f"{'✕' if in_sel else '＋'} {sel_label}", key="toggle_inspected_sel", width="stretch"):
-                    sel = st.session_state.get("map_selection", set())
-                    if in_sel:
-                        sel.discard(str(inspected_fid))
+
+                # ── Collect data for tabs ──
+                feature_issues = [
+                    i for i in filtered_issues
+                    if str(i.feature_id) == str(inspected_fid)
+                ]
+                fixable_issues = [i for i in feature_issues if get_strategies(i.issue_type)]
+
+                # Check if this is a junction with a null invert (not covered by pipe issues)
+                junction_needs_invert_fix = False
+                if feature_type == "junctions" and feature_row is not None:
+                    G = network["graph"]
+                    node_data = G.nodes[str(inspected_fid)] if hasattr(G, 'nodes') else G._nodes.get(str(inspected_fid), {})
+                    junc_inv = node_data.get("invert_elev")
+                    if junc_inv is None:
+                        junction_needs_invert_fix = True
+
+                fix_count = len(fixable_issues) + (1 if junction_needs_invert_fix else 0)
+                issue_count = len(feature_issues)
+
+                # ── Tabs ──
+                tab_labels = ["Info"]
+                if issue_count:
+                    tab_labels.append(f"Issues ({issue_count})")
+                if fix_count:
+                    tab_labels.append("Fix")
+                detail_tabs = st.tabs(tab_labels)
+
+                # ── Info Tab ──
+                with detail_tabs[0]:
+                    if feature_row is not None:
+                        ftype_mappings = st.session_state.get("mappings", {}).get(feature_type, {})
+                        mapped_items = []
+                        for internal_name, source_col in ftype_mappings.items():
+                            if source_col and source_col in feature_row.index:
+                                val = feature_row[source_col]
+                                if pd.notna(val):
+                                    mapped_items.append((internal_name, val))
+
+                        if mapped_items:
+                            st.markdown("**Mapped Fields**")
+                            for field_name, val in mapped_items:
+                                st.markdown(
+                                    f'<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:13px;border-bottom:1px solid #eee;">'
+                                    f'<span style="color:#666;">{field_name}</span>'
+                                    f'<span style="font-weight:500;">{val}</span></div>',
+                                    unsafe_allow_html=True,
+                                )
+
+                        with st.expander("All Attributes"):
+                            for col in feature_row.index:
+                                if col != "geometry":
+                                    val = feature_row[col]
+                                    if pd.notna(val):
+                                        st.markdown(
+                                            f'<span style="color:#888;font-size:12px;">{col}:</span> '
+                                            f'<span style="font-size:12px;">{val}</span>',
+                                            unsafe_allow_html=True,
+                                        )
                     else:
-                        sel.add(str(inspected_fid))
-                    st.session_state["map_selection"] = sel
-                    st.rerun()
+                        st.caption("Feature not found in loaded data.")
 
-            # ── Collect data for tabs ──
-            feature_issues = [
-                i for i in filtered_issues
-                if str(i.feature_id) == str(inspected_fid)
-            ]
-            fixable_issues = [i for i in feature_issues if get_strategies(i.issue_type)]
-
-            # Check if this is a junction with a null invert (not covered by pipe issues)
-            junction_needs_invert_fix = False
-            if feature_type == "junctions" and feature_row is not None:
-                G = network["graph"]
-                node_data = G.nodes[str(inspected_fid)] if hasattr(G, 'nodes') else G._nodes.get(str(inspected_fid), {})
-                junc_inv = node_data.get("invert_elev")
-                if junc_inv is None:
-                    junction_needs_invert_fix = True
-
-            fix_count = len(fixable_issues) + (1 if junction_needs_invert_fix else 0)
-            issue_count = len(feature_issues)
-
-            # ── Tabs ──
-            tab_labels = ["Info"]
-            if issue_count:
-                tab_labels.append(f"Issues ({issue_count})")
-            if fix_count:
-                tab_labels.append("Fix")
-            detail_tabs = st.tabs(tab_labels)
-
-            # ── Info Tab ──
-            with detail_tabs[0]:
-                if feature_row is not None:
-                    ftype_mappings = st.session_state.get("mappings", {}).get(feature_type, {})
-                    mapped_items = []
-                    for internal_name, source_col in ftype_mappings.items():
-                        if source_col and source_col in feature_row.index:
-                            val = feature_row[source_col]
-                            if pd.notna(val):
-                                mapped_items.append((internal_name, val))
-
-                    if mapped_items:
-                        st.markdown("**Mapped Fields**")
-                        for field_name, val in mapped_items:
+                # ── Issues Tab ──
+                if issue_count:
+                    with detail_tabs[1]:
+                        for issue in feature_issues:
+                            color = ISSUE_COLORS.get(issue.issue_type, "#999")
+                            display_name = ISSUE_DISPLAY_NAMES.get(issue.issue_type, issue.issue_type)
                             st.markdown(
-                                f'<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:13px;border-bottom:1px solid #eee;">'
-                                f'<span style="color:#666;">{field_name}</span>'
-                                f'<span style="font-weight:500;">{val}</span></div>',
+                                f'<div style="margin:6px 0 2px 0;">'
+                                f'<span style="color:{color};font-size:14px;">●</span> '
+                                f'<b>{display_name}</b> '
+                                f'<span style="font-size:11px;color:#888;">({issue.severity})</span>'
+                                f'</div>'
+                                f'<div style="font-size:12px;color:#555;margin-left:18px;margin-bottom:6px;">'
+                                f'{issue.message}</div>',
                                 unsafe_allow_html=True,
                             )
 
-                    with st.expander("All Attributes"):
-                        for col in feature_row.index:
-                            if col != "geometry":
-                                val = feature_row[col]
-                                if pd.notna(val):
-                                    st.markdown(
-                                        f'<span style="color:#888;font-size:12px;">{col}:</span> '
-                                        f'<span style="font-size:12px;">{val}</span>',
-                                        unsafe_allow_html=True,
+                # ── Fix Tab ──
+                if fix_count:
+                    fix_tab_idx = 2 if issue_count else 1
+                    with detail_tabs[fix_tab_idx]:
+                        for idx, issue in enumerate(fixable_issues):
+                            strategies = get_strategies(issue.issue_type)
+                            display_name = ISSUE_DISPLAY_NAMES.get(issue.issue_type, issue.issue_type)
+                            strategy_names = [s[1] for s in strategies]
+
+                            st.markdown(
+                                f'<span style="font-size:13px;font-weight:600;">{display_name}</span>',
+                                unsafe_allow_html=True,
+                            )
+                            selected_strategy = st.selectbox(
+                                "Strategy",
+                                strategy_names,
+                                key=f"fix_strategy_{inspected_fid}_{issue.issue_type}_{idx}",
+                                label_visibility="collapsed",
+                            )
+
+                            strategy_key = next(s[0] for s in strategies if s[1] == selected_strategy)
+
+                            fix_col1, fix_col2 = st.columns(2)
+                            with fix_col1:
+                                if st.button("Preview", key=f"preview_{inspected_fid}_{idx}",
+                                             width="stretch"):
+                                    entries = compute_fix(
+                                        strategy_key, issue,
+                                        network["graph"],
+                                        st.session_state["edit_ledger"],
                                     )
-                else:
-                    st.caption("Feature not found in loaded data.")
-
-            # ── Issues Tab ──
-            if issue_count:
-                with detail_tabs[1]:
-                    for issue in feature_issues:
-                        color = ISSUE_COLORS.get(issue.issue_type, "#999")
-                        display_name = ISSUE_DISPLAY_NAMES.get(issue.issue_type, issue.issue_type)
-                        st.markdown(
-                            f'<div style="margin:6px 0 2px 0;">'
-                            f'<span style="color:{color};font-size:14px;">●</span> '
-                            f'<b>{display_name}</b> '
-                            f'<span style="font-size:11px;color:#888;">({issue.severity})</span>'
-                            f'</div>'
-                            f'<div style="font-size:12px;color:#555;margin-left:18px;margin-bottom:6px;">'
-                            f'{issue.message}</div>',
-                            unsafe_allow_html=True,
-                        )
-
-            # ── Fix Tab ──
-            if fix_count:
-                fix_tab_idx = 2 if issue_count else 1
-                with detail_tabs[fix_tab_idx]:
-                    for idx, issue in enumerate(fixable_issues):
-                        strategies = get_strategies(issue.issue_type)
-                        display_name = ISSUE_DISPLAY_NAMES.get(issue.issue_type, issue.issue_type)
-                        strategy_names = [s[1] for s in strategies]
-
-                        st.markdown(
-                            f'<span style="font-size:13px;font-weight:600;">{display_name}</span>',
-                            unsafe_allow_html=True,
-                        )
-                        selected_strategy = st.selectbox(
-                            "Strategy",
-                            strategy_names,
-                            key=f"fix_strategy_{inspected_fid}_{issue.issue_type}_{idx}",
-                            label_visibility="collapsed",
-                        )
-
-                        strategy_key = next(s[0] for s in strategies if s[1] == selected_strategy)
-
-                        fix_col1, fix_col2 = st.columns(2)
-                        with fix_col1:
-                            if st.button("Preview", key=f"preview_{inspected_fid}_{idx}",
-                                         width="stretch"):
-                                entries = compute_fix(
-                                    strategy_key, issue,
-                                    network["graph"],
-                                    st.session_state["edit_ledger"],
-                                )
-                                st.session_state["preview_entries"] = entries
-                                st.session_state["preview_issue_key"] = f"{inspected_fid}_{idx}"
-                                st.rerun()
-
-                        with fix_col2:
-                            if st.button("Apply", key=f"apply_{inspected_fid}_{idx}",
-                                         width="stretch", type="primary"):
-                                entries = compute_fix(
-                                    strategy_key, issue,
-                                    network["graph"],
-                                    st.session_state["edit_ledger"],
-                                )
-                                if entries:
-                                    apply_group(st.session_state["edit_ledger"], entries)
-                                    st.session_state["preview_entries"] = None
+                                    st.session_state["preview_entries"] = entries
+                                    st.session_state["preview_issue_key"] = f"{inspected_fid}_{idx}"
                                     st.rerun()
+
+                            with fix_col2:
+                                if st.button("Apply", key=f"apply_{inspected_fid}_{idx}",
+                                             width="stretch", type="primary"):
+                                    entries = compute_fix(
+                                        strategy_key, issue,
+                                        network["graph"],
+                                        st.session_state["edit_ledger"],
+                                    )
+                                    if entries:
+                                        apply_group(st.session_state["edit_ledger"], entries)
+                                        st.session_state["preview_entries"] = None
+                                        st.rerun()
+                                    else:
+                                        st.warning("No fix available — connected features may also have missing data.")
+
+                            # Show preview if it matches this issue
+                            preview = st.session_state.get("preview_entries")
+                            preview_key = st.session_state.get("preview_issue_key")
+                            if preview is not None and preview_key == f"{inspected_fid}_{idx}":
+                                if preview:
+                                    preview_data = []
+                                    for e in preview:
+                                        preview_data.append({
+                                            "Feature": e.feature_id,
+                                            "Field": e.field,
+                                            "Old": f"{e.old_value:.3f}" if e.old_value is not None else "—",
+                                            "New": f"{e.new_value:.3f}" if e.new_value is not None else "—",
+                                            "Reason": e.reason,
+                                        })
+                                    st.dataframe(pd.DataFrame(preview_data), hide_index=True,
+                                                 width="stretch", height=min(35 * len(preview_data) + 38, 200))
                                 else:
-                                    st.warning("No fix available — connected features may also have missing data.")
+                                    st.caption("No changes needed.")
 
-                        # Show preview if it matches this issue
-                        preview = st.session_state.get("preview_entries")
-                        preview_key = st.session_state.get("preview_issue_key")
-                        if preview is not None and preview_key == f"{inspected_fid}_{idx}":
-                            if preview:
-                                preview_data = []
-                                for e in preview:
-                                    preview_data.append({
-                                        "Feature": e.feature_id,
-                                        "Field": e.field,
-                                        "Old": f"{e.old_value:.3f}" if e.old_value is not None else "—",
-                                        "New": f"{e.new_value:.3f}" if e.new_value is not None else "—",
-                                        "Reason": e.reason,
-                                    })
-                                st.dataframe(pd.DataFrame(preview_data), hide_index=True,
-                                             width="stretch", height=min(35 * len(preview_data) + 38, 200))
-                            else:
-                                st.caption("No changes needed.")
+                            if idx < len(fixable_issues) - 1:
+                                st.markdown("---")
 
-                        if idx < len(fixable_issues) - 1:
-                            st.markdown("---")
+                        # ── Junction null invert fix ──
+                        if junction_needs_invert_fix:
+                            if fixable_issues:
+                                st.markdown("---")
+                            st.markdown(
+                                '<span style="font-size:13px;font-weight:600;">Missing Junction Invert</span>',
+                                unsafe_allow_html=True,
+                            )
+                            st.caption("Set invert to the lowest connected pipe invert")
 
-                    # ── Junction null invert fix ──
-                    if junction_needs_invert_fix:
-                        if fixable_issues:
-                            st.markdown("---")
-                        st.markdown(
-                            '<span style="font-size:13px;font-weight:600;">Missing Junction Invert</span>',
-                            unsafe_allow_html=True,
-                        )
-                        st.caption("Set invert to the lowest connected pipe invert")
-
-                        jfix_col1, jfix_col2 = st.columns(2)
-                        with jfix_col1:
-                            if st.button("Preview", key="preview_junc_inv", width="stretch"):
-                                # Create a synthetic issue for the junction
-                                from src.profile_analyzer import ProfileIssue
-                                synth = ProfileIssue(
-                                    "NULL_JUNCTION_INVERT", "HIGH", str(inspected_fid),
-                                    f"Junction {inspected_fid}", "Missing invert elevation",
-                                    {"us_node": str(inspected_fid), "ds_node": str(inspected_fid)},
-                                )
-                                entries = junction_invert_from_lowest_pipe(
-                                    synth, network["graph"], st.session_state["edit_ledger"])
-                                st.session_state["preview_entries"] = entries
-                                st.session_state["preview_issue_key"] = "junc_inv"
-                                st.rerun()
-                        with jfix_col2:
-                            if st.button("Apply", key="apply_junc_inv",
-                                         width="stretch", type="primary"):
-                                from src.profile_analyzer import ProfileIssue
-                                synth = ProfileIssue(
-                                    "NULL_JUNCTION_INVERT", "HIGH", str(inspected_fid),
-                                    f"Junction {inspected_fid}", "Missing invert elevation",
-                                    {"us_node": str(inspected_fid), "ds_node": str(inspected_fid)},
-                                )
-                                entries = junction_invert_from_lowest_pipe(
-                                    synth, network["graph"], st.session_state["edit_ledger"])
-                                if entries:
-                                    apply_group(st.session_state["edit_ledger"], entries)
-                                    st.session_state["preview_entries"] = None
+                            jfix_col1, jfix_col2 = st.columns(2)
+                            with jfix_col1:
+                                if st.button("Preview", key="preview_junc_inv", width="stretch"):
+                                    # Create a synthetic issue for the junction
+                                    from src.profile_analyzer import ProfileIssue
+                                    synth = ProfileIssue(
+                                        "NULL_JUNCTION_INVERT", "HIGH", str(inspected_fid),
+                                        f"Junction {inspected_fid}", "Missing invert elevation",
+                                        {"us_node": str(inspected_fid), "ds_node": str(inspected_fid)},
+                                    )
+                                    entries = junction_invert_from_lowest_pipe(
+                                        synth, network["graph"], st.session_state["edit_ledger"])
+                                    st.session_state["preview_entries"] = entries
+                                    st.session_state["preview_issue_key"] = "junc_inv"
                                     st.rerun()
+                            with jfix_col2:
+                                if st.button("Apply", key="apply_junc_inv",
+                                             width="stretch", type="primary"):
+                                    from src.profile_analyzer import ProfileIssue
+                                    synth = ProfileIssue(
+                                        "NULL_JUNCTION_INVERT", "HIGH", str(inspected_fid),
+                                        f"Junction {inspected_fid}", "Missing invert elevation",
+                                        {"us_node": str(inspected_fid), "ds_node": str(inspected_fid)},
+                                    )
+                                    entries = junction_invert_from_lowest_pipe(
+                                        synth, network["graph"], st.session_state["edit_ledger"])
+                                    if entries:
+                                        apply_group(st.session_state["edit_ledger"], entries)
+                                        st.session_state["preview_entries"] = None
+                                        st.rerun()
+                                    else:
+                                        st.warning("No connected pipes with inverts found.")
+
+                            preview = st.session_state.get("preview_entries")
+                            preview_key = st.session_state.get("preview_issue_key")
+                            if preview is not None and preview_key == "junc_inv":
+                                if preview:
+                                    preview_data = []
+                                    for e in preview:
+                                        preview_data.append({
+                                            "Feature": e.feature_id,
+                                            "Field": e.field,
+                                            "Old": f"{e.old_value:.3f}" if e.old_value is not None else "—",
+                                            "New": f"{e.new_value:.3f}" if e.new_value is not None else "—",
+                                            "Reason": e.reason,
+                                        })
+                                    st.dataframe(pd.DataFrame(preview_data), hide_index=True,
+                                                 width="stretch", height=min(35 * len(preview_data) + 38, 200))
                                 else:
                                     st.warning("No connected pipes with inverts found.")
 
-                        preview = st.session_state.get("preview_entries")
-                        preview_key = st.session_state.get("preview_issue_key")
-                        if preview is not None and preview_key == "junc_inv":
-                            if preview:
-                                preview_data = []
-                                for e in preview:
-                                    preview_data.append({
-                                        "Feature": e.feature_id,
-                                        "Field": e.field,
-                                        "Old": f"{e.old_value:.3f}" if e.old_value is not None else "—",
-                                        "New": f"{e.new_value:.3f}" if e.new_value is not None else "—",
-                                        "Reason": e.reason,
-                                    })
-                                st.dataframe(pd.DataFrame(preview_data), hide_index=True,
-                                             width="stretch", height=min(35 * len(preview_data) + 38, 200))
-                            else:
-                                st.warning("No connected pipes with inverts found.")
+                        # Undo last fix
+                        ledger = st.session_state.get("edit_ledger", [])
+                        if ledger:
+                            summary = ledger_summary(ledger)
+                            st.markdown("---")
+                            st.caption(f"{summary['total_edits']} pending edit(s) across {summary['total_fixes']} fix(es)")
+                            if st.button("Undo Last Fix", key="undo_fix", width="stretch"):
+                                undo_last_group(st.session_state["edit_ledger"])
+                                st.session_state["preview_entries"] = None
+                                st.rerun()
 
-                    # Undo last fix
-                    ledger = st.session_state.get("edit_ledger", [])
-                    if ledger:
-                        summary = ledger_summary(ledger)
-                        st.markdown("---")
-                        st.caption(f"{summary['total_edits']} pending edit(s) across {summary['total_fixes']} fix(es)")
-                        if st.button("Undo Last Fix", key="undo_fix", width="stretch"):
-                            undo_last_group(st.session_state["edit_ledger"])
-                            st.session_state["preview_entries"] = None
-                            st.rerun()
+            else:
+                # ── No feature selected: Issues Summary ──
+                st.markdown("#### Issues Summary")
+                st.markdown(render_issues_summary_html(filtered_issues), unsafe_allow_html=True)
 
-        else:
-            # ── No feature selected: Issues Summary ──
-            st.markdown("#### Issues Summary")
-            st.markdown(render_issues_summary_html(filtered_issues), unsafe_allow_html=True)
-
-            if filtered_issues:
-                st.markdown("---")
-                issue_options = ["(none)"] + [
-                    f"{i.feature_id} — {i.issue_type.replace('_', ' ').title()}"
-                    for i in filtered_issues
-                ]
-                zoom_pick = st.selectbox(
-                    "Zoom to Issue", issue_options, index=0, key="zoom_issue_pick"
-                )
-                if zoom_pick != "(none)":
-                    picked_fid = zoom_pick.split(" — ")[0]
-                    bounds = get_feature_bounds(
-                        [picked_fid],
-                        pipes_gdf=gdfs.get("pipes"),
-                        junctions_gdf=gdfs.get("junctions"),
-                        network_result=network,
+                if filtered_issues:
+                    st.markdown("---")
+                    issue_options = ["(none)"] + [
+                        f"{i.feature_id} — {i.issue_type.replace('_', ' ').title()}"
+                        for i in filtered_issues
+                    ]
+                    zoom_pick = st.selectbox(
+                        "Zoom to Issue", issue_options, index=0, key="zoom_issue_pick"
                     )
-                    if bounds and bounds != st.session_state.get("zoom_bounds"):
-                        st.session_state["zoom_bounds"] = bounds
+                    if zoom_pick != "(none)":
+                        picked_fid = zoom_pick.split(" — ")[0]
+                        bounds = get_feature_bounds(
+                            [picked_fid],
+                            pipes_gdf=gdfs.get("pipes"),
+                            junctions_gdf=gdfs.get("junctions"),
+                            network_result=network,
+                        )
+                        if bounds and bounds != st.session_state.get("zoom_bounds"):
+                            st.session_state["zoom_bounds"] = bounds
+                            st.rerun()
+                    elif st.session_state.get("zoom_bounds") is not None:
+                        st.session_state["zoom_bounds"] = None
                         st.rerun()
-                elif st.session_state.get("zoom_bounds") is not None:
-                    st.session_state["zoom_bounds"] = None
-                    st.rerun()
 
-            st.markdown(
-                f"<span style='color:#888;font-size:12px;'>"
-                f"Click a feature on the map to inspect it.<br>"
-                f"{len(filtered_issues)} of {len(issues)} issues</span>",
-                unsafe_allow_html=True,
-            )
+                st.markdown(
+                    f"<span style='color:#888;font-size:12px;'>"
+                    f"Click a feature on the map to inspect it.<br>"
+                    f"{len(filtered_issues)} of {len(issues)} issues</span>",
+                    unsafe_allow_html=True,
+                )
+
+    _map_fragment()
 
     # ── Below map: Tabs for Issues, Profile, Pipe Data, Junction Data, Network Info ──
     tab_issues, tab_profile, tab_pipes, tab_junctions, tab_network = st.tabs([
@@ -1156,11 +1399,11 @@ else:
             if st.button("Generate Profile", key="gen_profile", type="primary"):
                 st.session_state["_show_profile"] = True
             if st.session_state.get("_show_profile"):
-                fig = build_profile_figure(set(_profile_target), network, gdfs, filtered_issues,
+                fig = build_profile_plotly(set(_profile_target), network, gdfs, filtered_issues,
                                            ledger=st.session_state.get("edit_ledger", []))
                 if fig:
-                    st.pyplot(fig, width="stretch")
-                    plt.close(fig)
+                    st.plotly_chart(fig, use_container_width=True,
+                                    config={"scrollZoom": True})
                 else:
                     st.info("No pipe data found for the selected features.")
         else:
