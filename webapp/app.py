@@ -618,9 +618,8 @@ with st.sidebar:
 
         # ── Selection Tools ──
         with st.expander("🔷 Selection", expanded=True):
-            multi_select = st.toggle("Multi-Select", value=False, key="multi_select_mode",
-                                     help="ON: clicks add/remove from selection. OFF: clicks inspect the feature.")
-            st.session_state["multi_select_mode"] = multi_select
+            st.toggle("Multi-Select", value=False, key="multi_select_mode",
+                      help="ON: clicks add/remove from selection. OFF: clicks inspect the feature.")
 
             map_sel = st.session_state.get("map_selection", set())
             if map_sel:
