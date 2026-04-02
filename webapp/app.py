@@ -111,6 +111,10 @@ if "edit_ledger" not in st.session_state:
     st.session_state["edit_ledger"] = []
 if "preview_entries" not in st.session_state:
     st.session_state["preview_entries"] = None
+if "_last_sel_name" not in st.session_state:
+    st.session_state["_last_sel_name"] = None
+if "_sel_processed" not in st.session_state:
+    st.session_state["_sel_processed"] = False
 
 
 # ════════════════════════════════════════════════════════════
@@ -745,18 +749,23 @@ else:
         )
 
         # Handle selection from map click
+        # Deduplicate: pydeck keeps selection across reruns, so we track
+        # whether we already processed the current selection object.
         if map_result and map_result.selection:
             objects = map_result.selection.get("objects", {})
-            # Flatten all selected objects from any layer
             selected_objects = []
             for layer_objects in objects.values():
                 selected_objects.extend(layer_objects)
             if selected_objects:
                 clicked_name = selected_objects[0].get("name", "")
-                # Strip issue prefix if present (e.g. "Adverse Slope: GM_123" -> "GM_123")
                 if ": " in clicked_name:
                     clicked_name = clicked_name.split(": ", 1)[1]
-                if clicked_name:
+                # Only process if this is a NEW click (different feature or not yet processed)
+                is_new = (clicked_name != st.session_state.get("_last_sel_name")
+                          or not st.session_state.get("_sel_processed", False))
+                if clicked_name and is_new:
+                    st.session_state["_last_sel_name"] = clicked_name
+                    st.session_state["_sel_processed"] = True
                     st.session_state["inspected_feature"] = clicked_name
                     if st.session_state.get("multi_select_mode", False):
                         sel = st.session_state.get("map_selection", set())
@@ -765,6 +774,10 @@ else:
                         else:
                             sel.add(clicked_name)
                         st.session_state["map_selection"] = sel
+        else:
+            # No selection means the user clicked empty space or a new rerun
+            # without a click — reset the processed flag for next click
+            st.session_state["_sel_processed"] = False
 
     with detail_col:
         inspected_fid = st.session_state.get("inspected_feature")
