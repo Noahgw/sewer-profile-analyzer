@@ -113,8 +113,8 @@ if "preview_entries" not in st.session_state:
     st.session_state["preview_entries"] = None
 if "_last_sel_name" not in st.session_state:
     st.session_state["_last_sel_name"] = None
-if "_sel_processed" not in st.session_state:
-    st.session_state["_sel_processed"] = False
+if "_show_profile" not in st.session_state:
+    st.session_state["_show_profile"] = False
 
 
 # ════════════════════════════════════════════════════════════
@@ -725,7 +725,31 @@ else:
     map_col, detail_col = st.columns([3, 1])
 
     with map_col:
-        # Build pydeck map with all layers
+        # ── Process pending click BEFORE building the map ──
+        # Streamlit stores pydeck selection in session_state under the widget key.
+        # Reading it here lets us update highlights before the map renders.
+        _pending = st.session_state.get("main_map", None)
+        if _pending and hasattr(_pending, "selection") and _pending.selection:
+            _objs = _pending.selection.get("objects", {})
+            _sel_list = []
+            for _lo in _objs.values():
+                _sel_list.extend(_lo)
+            if _sel_list:
+                _cname = _sel_list[0].get("name", "")
+                if ": " in _cname:
+                    _cname = _cname.split(": ", 1)[1]
+                if _cname and _cname != st.session_state.get("_last_sel_name"):
+                    st.session_state["_last_sel_name"] = _cname
+                    st.session_state["inspected_feature"] = _cname
+                    if st.session_state.get("multi_select_mode", False):
+                        sel = st.session_state.get("map_selection", set())
+                        if _cname in sel:
+                            sel.discard(_cname)
+                        else:
+                            sel.add(_cname)
+                        st.session_state["map_selection"] = sel
+
+        # Build pydeck map with all layers (now includes the just-processed click)
         map_selection = st.session_state.get("map_selection", set())
         deck = build_pydeck_map(
             pipes_gdf=gdfs.get("pipes"),
@@ -739,45 +763,14 @@ else:
             fixed_issues=fixed_issues,
         )
 
-        # Render map with click selection
-        map_result = st.pydeck_chart(
+        # Render map
+        st.pydeck_chart(
             deck,
             height=620,
             on_select="rerun",
             selection_mode="single-object",
             key="main_map",
         )
-
-        # Handle selection from map click
-        # Deduplicate: pydeck keeps selection across reruns, so we track
-        # whether we already processed the current selection object.
-        if map_result and map_result.selection:
-            objects = map_result.selection.get("objects", {})
-            selected_objects = []
-            for layer_objects in objects.values():
-                selected_objects.extend(layer_objects)
-            if selected_objects:
-                clicked_name = selected_objects[0].get("name", "")
-                if ": " in clicked_name:
-                    clicked_name = clicked_name.split(": ", 1)[1]
-                # Only process if this is a NEW click (different feature or not yet processed)
-                is_new = (clicked_name != st.session_state.get("_last_sel_name")
-                          or not st.session_state.get("_sel_processed", False))
-                if clicked_name and is_new:
-                    st.session_state["_last_sel_name"] = clicked_name
-                    st.session_state["_sel_processed"] = True
-                    st.session_state["inspected_feature"] = clicked_name
-                    if st.session_state.get("multi_select_mode", False):
-                        sel = st.session_state.get("map_selection", set())
-                        if clicked_name in sel:
-                            sel.discard(clicked_name)
-                        else:
-                            sel.add(clicked_name)
-                        st.session_state["map_selection"] = sel
-        else:
-            # No selection means the user clicked empty space or a new rerun
-            # without a click — reset the processed flag for next click
-            st.session_state["_sel_processed"] = False
 
     with detail_col:
         inspected_fid = st.session_state.get("inspected_feature")
@@ -1159,17 +1152,22 @@ else:
 
     with tab_profile:
         map_sel = st.session_state.get("map_selection", set())
-        if map_sel:
-            fig = build_profile_figure(map_sel, network, gdfs, filtered_issues,
-                                       ledger=st.session_state.get("edit_ledger", []))
-            if fig:
-                st.pyplot(fig, width="stretch")
-                plt.close(fig)
-            else:
-                st.info("No pipe data found for the selected features.")
+        inspected = st.session_state.get("inspected_feature")
+        _profile_target = list(map_sel) if map_sel else ([inspected] if inspected else [])
+        if _profile_target:
+            if st.button("Generate Profile", key="gen_profile", type="primary"):
+                st.session_state["_show_profile"] = True
+            if st.session_state.get("_show_profile"):
+                fig = build_profile_figure(set(_profile_target), network, gdfs, filtered_issues,
+                                           ledger=st.session_state.get("edit_ledger", []))
+                if fig:
+                    st.pyplot(fig, width="stretch")
+                    plt.close(fig)
+                else:
+                    st.info("No pipe data found for the selected features.")
         else:
-            st.info("Select features on the map to view their profile. "
-                    "Enable **Select on Map** in the sidebar, then click pipes or use box-select.")
+            st.info("Click a feature on the map to view its profile, "
+                    "or use **Multi-Select** to select multiple features.")
 
     # ── Map selection drives table filtering (ArcGIS Pro behavior) ──
     map_selection = st.session_state.get("map_selection", set())
