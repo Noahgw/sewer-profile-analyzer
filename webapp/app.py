@@ -618,7 +618,9 @@ with st.sidebar:
 
         # ── Selection Tools ──
         with st.expander("🔷 Selection", expanded=True):
-            st.caption("Click features on the map, or use Box Select below.")
+            multi_select = st.toggle("Multi-Select", value=False, key="multi_select_mode",
+                                     help="ON: clicks add/remove from selection. OFF: clicks inspect the feature.")
+            st.session_state["multi_select_mode"] = multi_select
 
             map_sel = st.session_state.get("map_selection", set())
             if map_sel:
@@ -626,53 +628,6 @@ with st.sidebar:
                 if st.button("✕ Clear Selection", key="clear_sel", width="stretch"):
                     st.session_state["map_selection"] = set()
                     st.rerun()
-
-            # ── Box Select ──
-            st.markdown("**Box Select**")
-            gdfs_ref = st.session_state.get("gdfs", {})
-            # Compute data extent for slider bounds
-            _all_bounds = None
-            for _ftype, _gdf in gdfs_ref.items():
-                _wgs = _gdf.to_crs(epsg=4326) if _gdf.crs and _gdf.crs.to_epsg() != 4326 else _gdf
-                _b = _wgs.total_bounds
-                if _all_bounds is None:
-                    _all_bounds = list(_b)
-                else:
-                    _all_bounds[0] = min(_all_bounds[0], _b[0])
-                    _all_bounds[1] = min(_all_bounds[1], _b[1])
-                    _all_bounds[2] = max(_all_bounds[2], _b[2])
-                    _all_bounds[3] = max(_all_bounds[3], _b[3])
-
-            if _all_bounds:
-                _pad = 0.001
-                box_lon = st.slider(
-                    "Longitude range",
-                    float(_all_bounds[0] - _pad), float(_all_bounds[2] + _pad),
-                    (float(_all_bounds[0]), float(_all_bounds[2])),
-                    step=0.0001, format="%.4f", key="box_lon",
-                )
-                box_lat = st.slider(
-                    "Latitude range",
-                    float(_all_bounds[1] - _pad), float(_all_bounds[3] + _pad),
-                    (float(_all_bounds[1]), float(_all_bounds[3])),
-                    step=0.0001, format="%.4f", key="box_lat",
-                )
-                if st.button("Select in Box", key="apply_box_sel", width="stretch", type="primary"):
-                    from shapely.geometry import box as shapely_box
-                    bbox = shapely_box(box_lon[0], box_lat[0], box_lon[1], box_lat[1])
-                    found_ids = set()
-                    for _ftype, _gdf in gdfs_ref.items():
-                        _wgs = _gdf.to_crs(epsg=4326) if _gdf.crs and _gdf.crs.to_epsg() != 4326 else _gdf
-                        _id_col = _wgs.columns[0]
-                        _mask = _wgs.geometry.intersects(bbox)
-                        found_ids |= set(_wgs.loc[_mask, _id_col].astype(str))
-                    if found_ids:
-                        sel = st.session_state.get("map_selection", set())
-                        sel |= found_ids
-                        st.session_state["map_selection"] = sel
-                        st.rerun()
-                    else:
-                        st.caption("No features in box.")
 
         # ── Filters ──
         st.markdown("---")
@@ -803,13 +758,14 @@ else:
                 if ": " in clicked_name:
                     clicked_name = clicked_name.split(": ", 1)[1]
                 if clicked_name:
-                    sel = st.session_state.get("map_selection", set())
-                    if clicked_name in sel:
-                        sel.discard(clicked_name)
-                    else:
-                        sel.add(clicked_name)
-                    st.session_state["map_selection"] = sel
                     st.session_state["inspected_feature"] = clicked_name
+                    if st.session_state.get("multi_select_mode", False):
+                        sel = st.session_state.get("map_selection", set())
+                        if clicked_name in sel:
+                            sel.discard(clicked_name)
+                        else:
+                            sel.add(clicked_name)
+                        st.session_state["map_selection"] = sel
 
     with detail_col:
         inspected_fid = st.session_state.get("inspected_feature")

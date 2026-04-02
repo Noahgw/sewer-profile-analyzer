@@ -80,7 +80,7 @@ def _extract_path_coords(geom):
     return None
 
 
-def _midpoint_arrow(path, arrow_len=0.00015):
+def _midpoint_arrow(path, arrow_len=0.00006):
     """
     Compute a short V-shaped arrow at the midpoint of a path,
     pointing in the flow direction.
@@ -226,9 +226,9 @@ def build_pydeck_map(pipes_gdf=None, junctions_gdf=None, pumps_gdf=None, storage
                         data=arrow_data,
                         get_path="path",
                         get_color="color",
-                        get_width=2,
-                        width_min_pixels=2,
-                        width_max_pixels=6,
+                        get_width=1,
+                        width_min_pixels=1,
+                        width_max_pixels=3,
                         pickable=False,
                     ))
 
