@@ -80,6 +80,55 @@ def _extract_path_coords(geom):
     return None
 
 
+def _midpoint_arrow(path, arrow_len=0.00015):
+    """
+    Compute a short V-shaped arrow at the midpoint of a path,
+    pointing in the flow direction.
+    Returns list of [lon, lat] pairs for the arrow, or None.
+    """
+    if not path or len(path) < 2:
+        return None
+
+    # Find total length and midpoint segment
+    dists = [0.0]
+    for i in range(1, len(path)):
+        dx = path[i][0] - path[i-1][0]
+        dy = path[i][1] - path[i-1][1]
+        dists.append(dists[-1] + math.sqrt(dx*dx + dy*dy))
+    total = dists[-1]
+    if total == 0:
+        return None
+
+    half = total / 2.0
+    for i in range(1, len(dists)):
+        if dists[i] >= half:
+            seg_len = dists[i] - dists[i-1]
+            frac = (half - dists[i-1]) / seg_len if seg_len > 0 else 0
+            mx = path[i-1][0] + frac * (path[i][0] - path[i-1][0])
+            my = path[i-1][1] + frac * (path[i][1] - path[i-1][1])
+            # Direction vector
+            dx = path[i][0] - path[i-1][0]
+            dy = path[i][1] - path[i-1][1]
+            d = math.sqrt(dx*dx + dy*dy)
+            if d == 0:
+                return None
+            dx, dy = dx/d, dy/d
+            # Arrow tip ahead of midpoint
+            tip_x = mx + arrow_len * dx
+            tip_y = my + arrow_len * dy
+            # Two tail points (perpendicular, behind midpoint)
+            tail_x = mx - arrow_len * 0.5 * dx
+            tail_y = my - arrow_len * 0.5 * dy
+            px, py = -dy, dx  # perpendicular
+            hw = arrow_len * 0.5
+            return [
+                [tail_x + hw * px, tail_y + hw * py],
+                [tip_x, tip_y],
+                [tail_x - hw * px, tail_y - hw * py],
+            ]
+    return None
+
+
 def _get_center_zoom(gdf_wgs):
     """Get center [lon, lat] and zoom from a WGS84 GeoDataFrame."""
     bounds = gdf_wgs.total_bounds  # [minx, miny, maxx, maxy]
@@ -159,6 +208,29 @@ def build_pydeck_map(pipes_gdf=None, junctions_gdf=None, pumps_gdf=None, storage
                     auto_highlight=True,
                     highlight_color=[0, 255, 255, 100],
                 ))
+
+            # ── Flow direction arrows at pipe midpoints ──
+            if vis.get("Flow Arrows", True):
+                arrow_data = []
+                for p in pipe_paths:
+                    arrow = _midpoint_arrow(p["path"])
+                    if arrow:
+                        arrow_data.append({
+                            "path": arrow,
+                            "name": p["name"],
+                            "color": [58, 120, 181, 220],
+                        })
+                if arrow_data:
+                    layers.append(pdk.Layer(
+                        "PathLayer",
+                        data=arrow_data,
+                        get_path="path",
+                        get_color="color",
+                        get_width=2,
+                        width_min_pixels=2,
+                        width_max_pixels=6,
+                        pickable=False,
+                    ))
 
     # ── Junctions layer ──
     if junctions_gdf is not None and len(junctions_gdf) > 0:
