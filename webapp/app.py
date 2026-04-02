@@ -116,6 +116,28 @@ if "_last_sel_name" not in st.session_state:
 if "_show_profile" not in st.session_state:
     st.session_state["_show_profile"] = False
 
+# ── Process pending map click early so all UI sees updated state ──
+_pending = st.session_state.get("main_map", None)
+if _pending and hasattr(_pending, "selection") and _pending.selection:
+    _objs = _pending.selection.get("objects", {})
+    _sel_list = []
+    for _lo in _objs.values():
+        _sel_list.extend(_lo)
+    if _sel_list:
+        _cname = _sel_list[0].get("name", "")
+        if ": " in _cname:
+            _cname = _cname.split(": ", 1)[1]
+        if _cname and _cname != st.session_state.get("_last_sel_name"):
+            st.session_state["_last_sel_name"] = _cname
+            st.session_state["inspected_feature"] = _cname
+            if st.session_state.get("multi_select_mode", False):
+                _sel = st.session_state.get("map_selection", set())
+                if _cname in _sel:
+                    _sel.discard(_cname)
+                else:
+                    _sel.add(_cname)
+                st.session_state["map_selection"] = _sel
+
 
 # ════════════════════════════════════════════════════════════
 # HELPER FUNCTIONS
@@ -725,31 +747,7 @@ else:
     map_col, detail_col = st.columns([3, 1])
 
     with map_col:
-        # ── Process pending click BEFORE building the map ──
-        # Streamlit stores pydeck selection in session_state under the widget key.
-        # Reading it here lets us update highlights before the map renders.
-        _pending = st.session_state.get("main_map", None)
-        if _pending and hasattr(_pending, "selection") and _pending.selection:
-            _objs = _pending.selection.get("objects", {})
-            _sel_list = []
-            for _lo in _objs.values():
-                _sel_list.extend(_lo)
-            if _sel_list:
-                _cname = _sel_list[0].get("name", "")
-                if ": " in _cname:
-                    _cname = _cname.split(": ", 1)[1]
-                if _cname and _cname != st.session_state.get("_last_sel_name"):
-                    st.session_state["_last_sel_name"] = _cname
-                    st.session_state["inspected_feature"] = _cname
-                    if st.session_state.get("multi_select_mode", False):
-                        sel = st.session_state.get("map_selection", set())
-                        if _cname in sel:
-                            sel.discard(_cname)
-                        else:
-                            sel.add(_cname)
-                        st.session_state["map_selection"] = sel
-
-        # Build pydeck map with all layers (now includes the just-processed click)
+        # Build pydeck map (click already processed at top of script)
         map_selection = st.session_state.get("map_selection", set())
         deck = build_pydeck_map(
             pipes_gdf=gdfs.get("pipes"),
