@@ -156,8 +156,9 @@ def analyze_invert_mismatches(G, has_networkx=False, thresholds=None):
     """
     Check invert continuity at junctions.
 
-    At each junction, the incoming pipe's ds_invert should approximately equal
-    the junction's invert_elev, and the outgoing pipe's us_invert should also match.
+    Pipe inverts may sit above the junction invert (normal — pipes enter above
+    the manhole floor).  Only flag pipes whose invert is *below* the junction
+    invert beyond tolerance, which indicates a data error.
     """
     t = thresholds or DEFAULT_PROFILE_THRESHOLDS
     tol = t.get("invert_mismatch_tolerance_m", 0.01)
@@ -179,14 +180,15 @@ def analyze_invert_mismatches(G, has_networkx=False, thresholds=None):
             ds_inv = _safe_float(edge_data.get("ds_invert"))
             pid = edge_data.get("pipe_id", f"{pred}->{nid}")
 
-            if ds_inv is not None and abs(ds_inv - junc_inv) > tol:
+            if ds_inv is not None and (junc_inv - ds_inv) > tol:
+                diff = junc_inv - ds_inv
                 issues.append(ProfileIssue(
                     ProfileIssue.INVERT_MISMATCH, ProfileIssue.MEDIUM, nid,
                     f"Junction {nid} (incoming pipe {pid})",
-                    f"Incoming pipe ds_invert ({ds_inv}) != junction invert ({junc_inv}), "
-                    f"diff = {abs(ds_inv - junc_inv):.3f} m",
+                    f"Incoming pipe ds_invert ({ds_inv}) is below junction invert ({junc_inv}), "
+                    f"diff = {diff:.3f} m",
                     {"junction_id": nid, "pipe_id": pid, "pipe_ds_invert": ds_inv,
-                     "junction_invert": junc_inv, "difference": abs(ds_inv - junc_inv)},
+                     "junction_invert": junc_inv, "difference": diff},
                 ))
 
         # Check outgoing pipes
@@ -195,14 +197,15 @@ def analyze_invert_mismatches(G, has_networkx=False, thresholds=None):
             us_inv = _safe_float(edge_data.get("us_invert"))
             pid = edge_data.get("pipe_id", f"{nid}->{succ}")
 
-            if us_inv is not None and abs(us_inv - junc_inv) > tol:
+            if us_inv is not None and (junc_inv - us_inv) > tol:
+                diff = junc_inv - us_inv
                 issues.append(ProfileIssue(
                     ProfileIssue.INVERT_MISMATCH, ProfileIssue.MEDIUM, nid,
                     f"Junction {nid} (outgoing pipe {pid})",
-                    f"Outgoing pipe us_invert ({us_inv}) != junction invert ({junc_inv}), "
-                    f"diff = {abs(us_inv - junc_inv):.3f} m",
+                    f"Outgoing pipe us_invert ({us_inv}) is below junction invert ({junc_inv}), "
+                    f"diff = {diff:.3f} m",
                     {"junction_id": nid, "pipe_id": pid, "pipe_us_invert": us_inv,
-                     "junction_invert": junc_inv, "difference": abs(us_inv - junc_inv)},
+                     "junction_invert": junc_inv, "difference": diff},
                 ))
 
     return issues
