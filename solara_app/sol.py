@@ -687,20 +687,6 @@ def FeatureInspector():
             # Fix Tools section
             solara.Text("Fix Tools", style={"fontWeight": "bold", "marginTop": "12px"})
 
-            # Minimum slope input
-            def _set_min_slope(val):
-                try:
-                    min_slope_setting.set(float(val))
-                except (ValueError, TypeError):
-                    pass
-
-            solara.InputText(
-                label="Min Slope (m/m)",
-                value=str(min_slope_setting.value),
-                on_value=_set_min_slope,
-                style={"maxWidth": "180px", "marginBottom": "8px"},
-            )
-
             ledger = edit_ledger.value
 
             for issue in feature_issues:
@@ -967,10 +953,28 @@ def Page():
                     solara.Info("Upload data first")
 
             with solara.lab.Tab("Settings"):
+                solara.Text("Analysis", style={"fontWeight": "bold", "fontSize": "14px", "marginBottom": "4px"})
                 solara.SliderFloat("Snap Tolerance (m)", value=snap_tolerance, min=0.1, max=20.0, step=0.1)
                 solara.SliderFloat("Invert Mismatch Tolerance (m)", value=invert_tolerance, min=0.001, max=0.5, step=0.001)
                 solara.SliderFloat("Min Structure Depth (m)", value=min_depth, min=0.3, max=2.0, step=0.1)
                 solara.SliderFloat("Max Structure Depth (m)", value=max_depth, min=5.0, max=20.0, step=0.5)
+
+                solara.HTML(tag="hr")
+                solara.Text("Fix Toolkit", style={"fontWeight": "bold", "fontSize": "14px", "marginBottom": "4px"})
+
+                def _set_min_slope(val):
+                    try:
+                        v = float(val)
+                        if v > 0:
+                            min_slope_setting.set(v)
+                    except (ValueError, TypeError):
+                        pass
+
+                solara.InputText(
+                    label="Min Slope (m/m)",
+                    value=str(min_slope_setting.value),
+                    on_value=_set_min_slope,
+                )
 
         solara.HTML(tag="hr")
 
