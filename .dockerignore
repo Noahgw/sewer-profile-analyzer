@@ -1,0 +1,10 @@
+solara_app/.venv/
+__pycache__/
+*.pyc
+.git/
+.claude/
+docs/
+webapp/
+*.pyt
+*.md
+.DS_Store
