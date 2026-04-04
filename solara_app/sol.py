@@ -42,6 +42,7 @@ from fix_toolkit_sol import (
     LedgerEntry, apply_group, undo_last_group, get_current_value,
     get_all_edits, ledger_summary, get_strategies, compute_fix,
     junction_invert_from_lowest_pipe,
+    CONNECTIVITY_STRATEGIES, compute_connectivity_entries,
 )
 from file_upload_widget import FileUploadWidget
 
@@ -65,6 +66,8 @@ inspected_feature = solara.reactive(None)
 edit_ledger = solara.reactive([])
 preview_entries = solara.reactive(None)
 min_slope_setting = solara.reactive(0.005)  # m/m — user-configurable
+# Pending connectivity fix: {strategy_key, issue, base_entries, connectivity_entries, description}
+pending_connectivity_fix = solara.reactive(None)
 
 # UI state
 show_profile = solara.reactive(False)
@@ -701,6 +704,7 @@ def FeatureInspector():
             solara.Text("Fix Tools", style={"fontWeight": "bold", "marginTop": "12px"})
 
             ledger = edit_ledger.value
+            pending = pending_connectivity_fix.value
 
             for issue in feature_issues:
                 strategies = get_strategies(issue.issue_type)
@@ -722,10 +726,27 @@ def FeatureInspector():
                             ftk.MIN_SLOPE = min_slope_setting.value
                             G = network.value["graph"]
                             entries = compute_fix(s_key, issue_obj, G, ledger)
-                            if entries:
-                                new_ledger = ledger.copy()
-                                apply_group(new_ledger, entries)
-                                edit_ledger.set(new_ledger)
+                            if not entries:
+                                return
+
+                            # For strategies that change inverts at junctions,
+                            # check if connecting pipes need adjustment
+                            if s_key in CONNECTIVITY_STRATEGIES:
+                                conn_entries, conn_descs = compute_connectivity_entries(
+                                    entries, issue_obj, G, ledger)
+                                if conn_entries:
+                                    # Store pending fix and show dialog
+                                    pending_connectivity_fix.set({
+                                        "base_entries": entries,
+                                        "conn_entries": conn_entries,
+                                        "conn_descs": conn_descs,
+                                    })
+                                    return
+
+                            # No connectivity impact — apply directly
+                            new_ledger = ledger.copy()
+                            apply_group(new_ledger, entries)
+                            edit_ledger.set(new_ledger)
                         return apply
 
                     solara.Button(
@@ -735,6 +756,48 @@ def FeatureInspector():
                         style={"fontSize": "11px", "marginBottom": "4px", "width": "100%",
                                "justifyContent": "flex-start", "textTransform": "none"},
                     )
+
+            # ── Connectivity confirmation dialog ──
+            if pending:
+                solara.HTML(tag="hr")
+                solara.HTML(unsafe_innerHTML=(
+                    '<div style="background:var(--bg-card);border:1px solid var(--accent);'
+                    'border-radius:8px;padding:10px;margin:8px 0;">'
+                    '<b style="color:var(--accent);">Adjust connecting pipes?</b>'
+                    '<p style="font-size:12px;color:var(--text-secondary);margin:6px 0 4px;">'
+                    'The fix will change inverts at a shared junction. '
+                    'These connecting pipes can be updated to maintain connectivity:</p>'
+                    + ''.join(
+                        f'<div style="font-size:11px;color:var(--text-primary);padding:2px 0;">'
+                        f'&bull; {d}</div>'
+                        for d in pending["conn_descs"]
+                    )
+                    + '</div>'
+                ))
+
+                def apply_with_connectivity():
+                    all_entries = pending["base_entries"] + pending["conn_entries"]
+                    new_ledger = edit_ledger.value.copy()
+                    apply_group(new_ledger, all_entries)
+                    edit_ledger.set(new_ledger)
+                    pending_connectivity_fix.set(None)
+
+                def apply_without_connectivity():
+                    new_ledger = edit_ledger.value.copy()
+                    apply_group(new_ledger, pending["base_entries"])
+                    edit_ledger.set(new_ledger)
+                    pending_connectivity_fix.set(None)
+
+                def cancel_fix():
+                    pending_connectivity_fix.set(None)
+
+                with solara.Row(style={"gap": "4px", "flexWrap": "wrap"}):
+                    solara.Button("Yes, adjust pipes", on_click=apply_with_connectivity,
+                                  color="primary", style={"fontSize": "11px", "textTransform": "none"})
+                    solara.Button("No, fix only", on_click=apply_without_connectivity,
+                                  outlined=True, style={"fontSize": "11px", "textTransform": "none"})
+                    solara.Button("Cancel", on_click=cancel_fix,
+                                  text=True, color="error", style={"fontSize": "11px", "textTransform": "none"})
 
             if ledger:
                 solara.HTML(tag="hr")

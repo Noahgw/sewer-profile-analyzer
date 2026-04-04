@@ -686,3 +686,112 @@ def compute_fix(strategy_key: str, issue, G, ledger) -> List[LedgerEntry]:
             if key == strategy_key:
                 return fn(issue, G, ledger)
     return []
+
+
+# Strategies that change pipe inverts at junctions and may break connectivity
+CONNECTIVITY_STRATEGIES = {
+    "min_slope_from_upstream", "min_slope_to_downstream",
+    "use_ground_slope", "linear_interpolate",
+}
+
+
+def compute_connectivity_entries(base_entries, issue, G, ledger):
+    """Compute additional entries to adjust connecting pipes at affected junctions.
+
+    When a pipe's invert is changed at a junction, neighbouring pipes that
+    connect to the same junction may need their matching invert updated to
+    maintain connectivity.
+
+    Returns (entries, descriptions) where descriptions is a list of
+    human-readable strings explaining each proposed adjustment.
+    """
+    combined_ledger = ledger + base_entries
+    entries = []
+    descriptions = []
+
+    # Build a map of what the base fix changed: {(pipe_id, field): new_value}
+    changed = {}
+    for e in base_entries:
+        changed[(e.feature_id, e.field)] = e.new_value
+
+    # For each changed pipe invert, find the junction node and check neighbours
+    for (pid, field), new_val in changed.items():
+        if new_val is None:
+            continue
+
+        u, v, data = _find_pipe_edge(G, pid)
+        if data is None:
+            continue
+
+        # Determine which junction is affected
+        if field == "ds_invert":
+            # DS invert changed → junction at v
+            node_id = str(v)
+            # Other pipes: outgoing from v have us_invert at this junction
+            for succ in G.successors(v):
+                edge = _get_edge(G, v, succ)
+                nbr_pid = str(edge.get("pipe_id", ""))
+                if nbr_pid == pid:
+                    continue
+                current_us = get_current_value(combined_ledger, nbr_pid, "us_invert",
+                                               _safe_float(edge.get("us_invert")))
+                if current_us is not None and current_us != new_val:
+                    entries.append(LedgerEntry(
+                        nbr_pid, "pipe", "us_invert", current_us, round(new_val, 3),
+                        f"Match connectivity at junction {node_id}",
+                        "connectivity_adjustment"))
+                    descriptions.append(
+                        f"Pipe {nbr_pid} US invert: {current_us:.3f} → {new_val:.3f} "
+                        f"(match at junction {node_id})")
+            # Incoming pipes to v have ds_invert at this junction
+            for pred in G.predecessors(v):
+                edge = _get_edge(G, pred, v)
+                nbr_pid = str(edge.get("pipe_id", ""))
+                if nbr_pid == pid:
+                    continue
+                current_ds = get_current_value(combined_ledger, nbr_pid, "ds_invert",
+                                               _safe_float(edge.get("ds_invert")))
+                if current_ds is not None and current_ds != new_val:
+                    entries.append(LedgerEntry(
+                        nbr_pid, "pipe", "ds_invert", current_ds, round(new_val, 3),
+                        f"Match connectivity at junction {node_id}",
+                        "connectivity_adjustment"))
+                    descriptions.append(
+                        f"Pipe {nbr_pid} DS invert: {current_ds:.3f} → {new_val:.3f} "
+                        f"(match at junction {node_id})")
+
+        elif field == "us_invert":
+            # US invert changed → junction at u
+            node_id = str(u)
+            for succ in G.successors(u):
+                edge = _get_edge(G, u, succ)
+                nbr_pid = str(edge.get("pipe_id", ""))
+                if nbr_pid == pid:
+                    continue
+                current_us = get_current_value(combined_ledger, nbr_pid, "us_invert",
+                                               _safe_float(edge.get("us_invert")))
+                if current_us is not None and current_us != new_val:
+                    entries.append(LedgerEntry(
+                        nbr_pid, "pipe", "us_invert", current_us, round(new_val, 3),
+                        f"Match connectivity at junction {node_id}",
+                        "connectivity_adjustment"))
+                    descriptions.append(
+                        f"Pipe {nbr_pid} US invert: {current_us:.3f} → {new_val:.3f} "
+                        f"(match at junction {node_id})")
+            for pred in G.predecessors(u):
+                edge = _get_edge(G, pred, u)
+                nbr_pid = str(edge.get("pipe_id", ""))
+                if nbr_pid == pid:
+                    continue
+                current_ds = get_current_value(combined_ledger, nbr_pid, "ds_invert",
+                                               _safe_float(edge.get("ds_invert")))
+                if current_ds is not None and current_ds != new_val:
+                    entries.append(LedgerEntry(
+                        nbr_pid, "pipe", "ds_invert", current_ds, round(new_val, 3),
+                        f"Match connectivity at junction {node_id}",
+                        "connectivity_adjustment"))
+                    descriptions.append(
+                        f"Pipe {nbr_pid} DS invert: {current_ds:.3f} → {new_val:.3f} "
+                        f"(match at junction {node_id})")
+
+    return entries, descriptions
