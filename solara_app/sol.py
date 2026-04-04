@@ -132,6 +132,19 @@ def _convert_to_metric(value, field_name, feature_type):
             return val * 0.3048
     return val
 
+def _metric_to_data_unit(value_m, field_name, feature_type):
+    """Convert a metric threshold (m) to the user's configured data unit for comparison with raw data."""
+    if value_m is None:
+        return None
+    key = f"{feature_type}.{field_name}"
+    unit = field_units.value.get(key)
+    if unit is None:
+        unit = FIELD_UNIT_OPTIONS.get(field_name, ["m"])[0]
+    if unit == "ft":
+        return value_m / 0.3048
+    return value_m  # already metric
+
+
 # Path to test data (used by Load Test Data button)
 _test_data_dir = Path(__file__).resolve().parent.parent / "data" / "Langford"
 
@@ -1003,13 +1016,19 @@ def Page():
                 )
                 network.set(net)
 
+                # Convert metric thresholds to data units so analysis
+                # compares apples-to-apples with raw shapefile values
+                inv_tol = _metric_to_data_unit(invert_tolerance.value, "invert_elev", "junctions")
+                mn_dep  = _metric_to_data_unit(min_depth.value, "invert_elev", "junctions")
+                mx_dep  = _metric_to_data_unit(max_depth.value, "invert_elev", "junctions")
+
                 thresholds = {
-                    "invert_mismatch_tolerance_m": invert_tolerance.value,
-                    "invert_mismatch_tolerance_ft": invert_tolerance.value,
-                    "min_structure_depth_m": min_depth.value,
-                    "min_structure_depth_ft": min_depth.value,
-                    "max_structure_depth_m": max_depth.value,
-                    "max_structure_depth_ft": max_depth.value,
+                    "invert_mismatch_tolerance_m": inv_tol,
+                    "invert_mismatch_tolerance_ft": inv_tol,
+                    "min_structure_depth_m": mn_dep,
+                    "min_structure_depth_ft": mn_dep,
+                    "max_structure_depth_m": mx_dep,
+                    "max_structure_depth_ft": mx_dep,
                     "adverse_slope_severity_threshold": -0.01,
                 }
                 result = run_full_analysis(net, thresholds)
