@@ -214,7 +214,7 @@ def linear_interpolate(issue, G, ledger):
 
 
 def min_slope_from_upstream(issue, G, ledger):
-    """Set DS invert using min slope from US invert, cascade downstream."""
+    """Set DS invert using min slope from US invert (no cascade — connectivity dialog handles neighbours)."""
     u, v, data = _find_pipe_edge(G, issue.feature_id)
     if data is None:
         return []
@@ -232,10 +232,6 @@ def min_slope_from_upstream(issue, G, ledger):
     if ds_inv_old != new_ds:
         entries.append(LedgerEntry(pid, "pipe", "ds_invert", ds_inv_old, new_ds,
                                    "Min slope from upstream", "min_slope_from_upstream"))
-
-    # Cascade downstream
-    cascade = _cascade_downstream(v, new_ds, G, ledger + entries)
-    entries.extend(cascade)
     return entries
 
 
@@ -290,7 +286,7 @@ def use_ground_slope(issue, G, ledger):
 
 
 def min_slope_to_downstream(issue, G, ledger):
-    """Set US invert using min slope to DS invert, cascade upstream."""
+    """Set US invert using min slope to DS invert (no cascade — connectivity dialog handles neighbours)."""
     u, v, data = _find_pipe_edge(G, issue.feature_id)
     if data is None:
         return []
@@ -308,10 +304,6 @@ def min_slope_to_downstream(issue, G, ledger):
     if us_inv_old != new_us:
         entries.append(LedgerEntry(pid, "pipe", "us_invert", us_inv_old, new_us,
                                    "Min slope to downstream", "min_slope_to_downstream"))
-
-    # Cascade upstream
-    cascade = _cascade_upstream(u, new_us, G, ledger + entries)
-    entries.extend(cascade)
     return entries
 
 

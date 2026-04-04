@@ -1471,7 +1471,7 @@ def _build_profile(selected_ids):
     TEXT_COLOR = "#4a5568"
 
     total_range = cumulative if cumulative > 0 else 1.0
-    mh_half_w = max(total_range * 0.012, 2.5)
+    mh_half_w = 0.5  # 1m total manhole width (0.5m each side)
 
     fig = go.Figure()
 
