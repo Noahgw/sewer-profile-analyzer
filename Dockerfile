@@ -15,11 +15,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ /app/src/
 COPY config/ /app/config/
 COPY solara_app/ /app/solara_app/
-COPY data/ /app/data/
+
+# Create empty data dir (users upload their own data)
+RUN mkdir -p /app/data
 
 WORKDIR /app/solara_app
 
+# Railway sets PORT dynamically; default to 8765 for local testing
 ENV PORT=8765
-EXPOSE 8765
 
-CMD ["python", "-m", "solara", "run", "sol.py", "--host", "0.0.0.0", "--port", "8765", "--no-open"]
+# Must use shell form so $PORT expands at runtime
+CMD python -m solara run sol.py --host 0.0.0.0 --port $PORT --no-open
