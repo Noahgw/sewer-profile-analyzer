@@ -1157,23 +1157,39 @@ def Page():
                         current.append(itype)
                     filter_types.set(current)
 
+                issue_counts = Counter(i.issue_type for i in analysis.value["issues"])
                 for itype in sorted(all_issue_types):
                     color = ISSUE_COLORS.get(itype, "#999")
                     display = ISSUE_DISPLAY_NAMES.get(itype, itype)
                     is_active = itype in active
-                    count = Counter(i.issue_type for i in analysis.value["issues"]).get(itype, 0)
-                    active_cls = "active" if is_active else "inactive"
-                    bg = f"background:{color};color:#fff;" if is_active else f"background:transparent;color:{color};"
-                    solara.HTML(unsafe_innerHTML=(
-                        f'<span class="issue-chip {active_cls}" style="border:1px solid {color};{bg}">'
-                        f'{display} ({count})</span>'
-                    ))
+                    count = issue_counts.get(itype, 0)
+
+                    def make_toggle(it):
+                        def toggle():
+                            toggle_issue_type(it)
+                        return toggle
+
+                    solara.Button(
+                        f"{'✓ ' if is_active else '○ '}{display} ({count})",
+                        on_click=make_toggle(itype),
+                        style={
+                            "fontSize": "11px",
+                            "width": "100%",
+                            "justifyContent": "flex-start",
+                            "textTransform": "none",
+                            "marginBottom": "2px",
+                            "borderLeft": f"4px solid {color}",
+                            "background": f"{color}22" if is_active else "transparent",
+                            "color": "var(--text-sidebar)" if is_active else "var(--text-sidebar-muted)",
+                        },
+                        text=True,
+                    )
 
                 with solara.Row(style={"gap": "4px", "marginTop": "4px"}):
                     solara.Button("All", on_click=lambda: filter_types.set(all_issue_types),
-                                  text=True, style={"fontSize": "11px"})
+                                  outlined=True, style={"fontSize": "11px", "textTransform": "none"})
                     solara.Button("None", on_click=lambda: filter_types.set([]),
-                                  text=True, style={"fontSize": "11px"})
+                                  outlined=True, style={"fontSize": "11px", "textTransform": "none"})
 
             solara.HTML(tag="hr")
             solara.Button(
