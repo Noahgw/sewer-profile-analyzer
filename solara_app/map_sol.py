@@ -247,6 +247,25 @@ def _prepare_map_data(pipes_gdf, junctions_gdf, pumps_gdf, storage_gdf, issues, 
     else:
         result["juncs_geojson"] = None
 
+    # Build pipe issue color map: {pipe_feature_id: color}
+    # Priority: HIGH severity > MEDIUM > LOW; within same severity, first match wins
+    pipe_issue_colors = {}
+    junc_issue_colors = {}
+    SEVERITY_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    if issues:
+        sorted_issues = sorted(issues, key=lambda i: SEVERITY_ORDER.get(i.severity, 3))
+        for issue in sorted_issues:
+            fid = str(issue.feature_id)
+            color = ISSUE_COLORS.get(issue.issue_type)
+            if color and issue.issue_type in PIPE_ISSUE_TYPES:
+                if fid not in pipe_issue_colors:
+                    pipe_issue_colors[fid] = color
+            elif color and issue.issue_type not in PIPE_ISSUE_TYPES:
+                if fid not in junc_issue_colors:
+                    junc_issue_colors[fid] = color
+    result["pipe_issue_colors"] = pipe_issue_colors
+    result["junc_issue_colors"] = junc_issue_colors
+
     # Prepare issue marker locations
     markers = []
     if issues and network_result:
@@ -348,11 +367,15 @@ def build_leaflet_map(
     _last_map_widget[0] = m
 
     # ── Pipes Layer ──
+    pipe_colors = data.get("pipe_issue_colors", {})
     if data["pipes_geojson"] and visible_layers.get("Pipes", True):
         def pipe_style(feature):
             fid = feature.get("properties", {}).get("id", "")
             if fid in selected_ids:
                 return {"color": "#00FFFF", "weight": 6, "opacity": 0.9}
+            issue_color = pipe_colors.get(fid)
+            if issue_color:
+                return {"color": issue_color, "weight": 4, "opacity": 0.9}
             return {"color": "#4A90D9", "weight": 3, "opacity": 0.7}
 
         def on_pipe_click(feature=None, **kwargs):
