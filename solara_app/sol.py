@@ -1284,9 +1284,6 @@ def Page():
         unfixed = [i for i in filtered if str(i.feature_id) not in edited_ids]
         fixed = [i for i in filtered if str(i.feature_id) in edited_ids]
 
-        # Metric bar
-        MetricBar(filtered, stats)
-
         # Map + Detail panel
         with solara.Columns([3, 1]):
             # Map column
@@ -1683,31 +1680,45 @@ def _build_profile(selected_ids):
 
 
 def _render_network_info():
-    """Render network statistics."""
+    """Render network statistics and issue summary."""
     if not network.value:
         solara.Info("Run analysis first.")
         return
 
     stats = network.value["stats"]
+    issues = analysis.value["issues"] if analysis.value else []
+    total_issues = len(issues)
+    issue_types = len(set(i.issue_type for i in issues)) if issues else 0
 
-    with solara.Columns([1, 1]):
+    with solara.Columns([1, 1, 1]):
         with solara.Column():
-            solara.Text("Network Statistics", style={"fontWeight": "bold"})
+            solara.Text("Network", style={"fontWeight": "bold"})
             solara.Markdown(f"""
 - Pipes: **{stats['total_edges']}**
 - Nodes: **{stats['total_nodes']}**
-- Connected components: **{stats['connected_components']}**
+- Components: **{stats['connected_components']}**
 - Largest component: **{stats['largest_component_size']}** nodes
-- Virtual nodes created: **{stats['virtual_nodes_created']}**
+- Virtual nodes: **{stats['virtual_nodes_created']}**
 """)
+        with solara.Column():
+            solara.Text("Issues", style={"fontWeight": "bold"})
+            solara.Markdown(f"""
+- Issues found: **{total_issues}**
+- Issue types: **{issue_types}**
+""")
+            if issues:
+                from collections import Counter
+                sev_counts = Counter(i.severity for i in issues)
+                for sev in ["HIGH", "MEDIUM", "LOW"]:
+                    c = sev_counts.get(sev, 0)
+                    if c > 0:
+                        solara.Markdown(f"- {sev}: **{c}**")
+
         with solara.Column():
             solara.Text("Connectivity", style={"fontWeight": "bold"})
             if stats["source_nodes"]:
-                nodes_str = ", ".join(str(n) for n in stats["source_nodes"][:10])
-                solara.Markdown(f"- Source nodes: {nodes_str}")
+                solara.Markdown(f"- Source nodes: **{len(stats['source_nodes'])}**")
             if stats["dead_end_nodes"]:
-                nodes_str = ", ".join(str(n) for n in stats["dead_end_nodes"][:10])
-                solara.Markdown(f"- Dead ends: {nodes_str}")
+                solara.Markdown(f"- Dead ends: **{len(stats['dead_end_nodes'])}**")
             if stats["orphan_nodes"]:
-                nodes_str = ", ".join(str(n) for n in stats["orphan_nodes"][:10])
-                solara.Markdown(f"- Orphan nodes: {nodes_str}")
+                solara.Markdown(f"- Orphan nodes: **{len(stats['orphan_nodes'])}**")
