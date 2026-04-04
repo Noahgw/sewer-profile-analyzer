@@ -64,6 +64,7 @@ inspected_feature = solara.reactive(None)
 # Fix state
 edit_ledger = solara.reactive([])
 preview_entries = solara.reactive(None)
+min_slope_setting = solara.reactive(0.005)  # m/m — user-configurable
 
 # UI state
 show_profile = solara.reactive(False)
@@ -686,6 +687,20 @@ def FeatureInspector():
             # Fix Tools section
             solara.Text("Fix Tools", style={"fontWeight": "bold", "marginTop": "12px"})
 
+            # Minimum slope input
+            def _set_min_slope(val):
+                try:
+                    min_slope_setting.set(float(val))
+                except (ValueError, TypeError):
+                    pass
+
+            solara.InputText(
+                label="Min Slope (m/m)",
+                value=str(min_slope_setting.value),
+                on_value=_set_min_slope,
+                style={"maxWidth": "180px", "marginBottom": "8px"},
+            )
+
             ledger = edit_ledger.value
 
             for issue in feature_issues:
@@ -704,10 +719,13 @@ def FeatureInspector():
                 for strat_key, strat_name, _fn in strategies:
                     def make_apply(issue_obj, s_key):
                         def apply():
+                            import fix_toolkit_sol as ftk
+                            ftk.MIN_SLOPE = min_slope_setting.value
                             G = network.value["graph"]
                             entries = compute_fix(s_key, issue_obj, G, ledger)
                             if entries:
-                                new_ledger = ledger.copy() + entries
+                                new_ledger = ledger.copy()
+                                apply_group(new_ledger, entries)
                                 edit_ledger.set(new_ledger)
                         return apply
 
@@ -722,7 +740,8 @@ def FeatureInspector():
             if ledger:
                 solara.HTML(tag="hr")
                 def do_undo():
-                    new_ledger = undo_last_group(ledger)
+                    new_ledger = ledger.copy()
+                    undo_last_group(new_ledger)
                     edit_ledger.set(new_ledger)
                 solara.Button("Undo Last Fix", on_click=do_undo, color="error", text=True,
                               style={"fontSize": "12px"})

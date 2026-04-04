@@ -239,6 +239,56 @@ def min_slope_from_upstream(issue, G, ledger):
     return entries
 
 
+def use_ground_slope(issue, G, ledger):
+    """Set pipe inverts to follow the ground surface slope (rim-to-rim) at minimum cover depth."""
+    u, v, data = _find_pipe_edge(G, issue.feature_id)
+    if data is None:
+        return []
+
+    pid = str(issue.feature_id)
+    u_node = _get_node(G, u)
+    v_node = _get_node(G, v)
+
+    us_rim = _safe_float(u_node.get("rim_elev"))
+    ds_rim = _safe_float(v_node.get("rim_elev"))
+
+    if us_rim is None or ds_rim is None:
+        return []
+
+    length = _safe_float(data.get("length")) or 100
+    diameter = _safe_float(data.get("diameter")) or 0.3  # default 300mm
+
+    # Ground slope (rim to rim)
+    ground_slope = (us_rim - ds_rim) / length if length > 0 else MIN_SLOPE
+
+    # If ground slope is too flat or adverse, use minimum slope
+    if ground_slope < MIN_SLOPE:
+        ground_slope = MIN_SLOPE
+
+    # Maintain the current depth at the upstream end; if no current invert,
+    # default to 1.5m cover below rim
+    us_inv_old = get_current_value(ledger, pid, "us_invert", _safe_float(data.get("us_invert")))
+    ds_inv_old = get_current_value(ledger, pid, "ds_invert", _safe_float(data.get("ds_invert")))
+
+    if us_inv_old is not None:
+        new_us = us_inv_old
+    else:
+        new_us = round(us_rim - 1.5, 3)  # default 1.5m cover
+
+    new_ds = round(new_us - ground_slope * length, 3)
+
+    entries = []
+    if us_inv_old != new_us:
+        entries.append(LedgerEntry(pid, "pipe", "us_invert", us_inv_old, new_us,
+                                   f"Ground slope ({ground_slope:.4f} m/m) from rim elevations",
+                                   "use_ground_slope"))
+    if ds_inv_old != new_ds:
+        entries.append(LedgerEntry(pid, "pipe", "ds_invert", ds_inv_old, new_ds,
+                                   f"Ground slope ({ground_slope:.4f} m/m) from rim elevations",
+                                   "use_ground_slope"))
+    return entries
+
+
 def min_slope_to_downstream(issue, G, ledger):
     """Set US invert using min slope to DS invert, cascade upstream."""
     u, v, data = _find_pipe_edge(G, issue.feature_id)
@@ -609,6 +659,7 @@ STRATEGIES = {
         ("linear_interpolate", "Linear Interpolate", linear_interpolate),
         ("min_slope_from_upstream", "Min Slope from Upstream", min_slope_from_upstream),
         ("min_slope_to_downstream", "Min Slope to Downstream", min_slope_to_downstream),
+        ("use_ground_slope", "Use Ground Slope", use_ground_slope),
     ],
     "INVERT_MISMATCH": [
         ("adjust_pipe_to_junction", "Adjust Pipe to Match Junction", adjust_pipe_to_junction),
@@ -618,6 +669,7 @@ STRATEGIES = {
         ("null_invert_from_junction", "From Connected Junction", null_invert_from_junction),
         ("null_invert_from_neighbor_pipe", "From Neighbor Pipe", null_invert_from_neighbor_pipe),
         ("null_invert_interpolate", "Interpolate (Min Slope)", null_invert_interpolate),
+        ("use_ground_slope", "Use Ground Slope", use_ground_slope),
     ],
 }
 
