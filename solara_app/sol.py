@@ -199,6 +199,7 @@ body { background: var(--bg-deep) !important; }
     background: linear-gradient(180deg, #1e293b 0%, #1a2332 100%) !important;
     border-right: 1px solid rgba(255,255,255,0.06) !important;
     color: var(--text-sidebar) !important;
+    padding-bottom: 60px !important;
 }
 .v-navigation-drawer .v-input .v-label { color: var(--text-sidebar-muted) !important; }
 .v-navigation-drawer .v-input--checkbox .v-label { color: var(--text-sidebar) !important; }
