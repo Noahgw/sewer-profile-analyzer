@@ -132,21 +132,27 @@ def analyze_adverse_slopes(G, has_networkx=False, thresholds=None):
         if _is_forcemain(data):
             continue
 
+        slope = None
+        if length and length > 0:
+            slope = (us_inv - ds_inv) / length
+
         if ds_inv > us_inv:
-            slope = None
-            if length and length > 0:
-                slope = (us_inv - ds_inv) / length
-
-            severity = ProfileIssue.HIGH if (slope and slope < t["adverse_slope_severity_threshold"]) else ProfileIssue.MEDIUM
-
             slope_str = f", slope = {slope:.6f} m/m" if slope else ""
             issues.append(ProfileIssue(
-                ProfileIssue.ADVERSE_SLOPE, severity, pid,
+                ProfileIssue.ADVERSE_SLOPE, ProfileIssue.HIGH, pid,
                 f"Pipe {pid} ({u} -> {v})",
                 f"Adverse slope: US invert {us_inv} < DS invert {ds_inv} "
                 f"(rise = {ds_inv - us_inv:.2f} m{slope_str})",
                 {"us_node": u, "ds_node": v, "us_invert": us_inv,
                  "ds_invert": ds_inv, "slope": slope, "length": length},
+            ))
+        elif ds_inv == us_inv:
+            issues.append(ProfileIssue(
+                ProfileIssue.ADVERSE_SLOPE, ProfileIssue.HIGH, pid,
+                f"Pipe {pid} ({u} -> {v})",
+                f"Flat slope: US invert {us_inv} = DS invert {ds_inv} (slope = 0.0 m/m)",
+                {"us_node": u, "ds_node": v, "us_invert": us_inv,
+                 "ds_invert": ds_inv, "slope": 0.0, "length": length},
             ))
 
     return issues
