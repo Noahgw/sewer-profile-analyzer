@@ -1423,6 +1423,7 @@ def _build_profile(selected_ids):
     ledger = edit_ledger.value
 
     # Collect selected pipe edges
+    # A pipe is included if its ID OR either connected node is in the selection
     pipe_edges = []
     for u, v, data in G.edges(data=True):
         pid = str(data.get("pipe_id", ""))
@@ -1605,10 +1606,25 @@ def _build_profile(selected_ids):
     for sta, nid, ndata in profile_nodes:
         rim_raw = ndata.get("rim_elev")
         inv_raw = ndata.get("invert_elev")
-        if rim_raw is None or inv_raw is None:
+        if rim_raw is None and inv_raw is None:
+            # No elevation data at all — show a label only
+            fig.add_trace(go.Scatter(
+                x=[sta], y=[0], mode="text",
+                text=[f"{nid}\n(no data)"],
+                textfont=dict(size=8, color="#999"),
+                showlegend=False, hoverinfo="skip",
+            ))
             continue
-        rim = cv_junc("rim_elev", float(rim_raw))
-        inv = cv_junc("invert_elev", float(inv_raw))
+        # If only one is missing, estimate from pipe inverts at this station
+        if rim_raw is None:
+            inv = cv_junc("invert_elev", float(inv_raw))
+            rim = inv + 2.0  # assume 2m default depth
+        elif inv_raw is None:
+            rim = cv_junc("rim_elev", float(rim_raw))
+            inv = rim - 2.0  # assume 2m default depth
+        else:
+            rim = cv_junc("rim_elev", float(rim_raw))
+            inv = cv_junc("invert_elev", float(inv_raw))
 
         # Manhole walls
         mh_xs = [sta - mh_half_w, sta + mh_half_w, sta + mh_half_w,
