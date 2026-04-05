@@ -1327,8 +1327,7 @@ def Page():
                     target = list(map_selection.value) if map_selection.value else [inspected_feature.value]
                     fig = _build_profile(set(target))
                     if fig:
-                        # Key changes with ledger so Plotly re-renders after fixes
-                        solara.FigurePlotly(fig, key=f"profile-{ledger_len}")
+                        solara.FigurePlotly(fig)
                     else:
                         solara.Info("No pipe data found for selected features. Select pipes or junctions connected to pipes.")
                 else:
