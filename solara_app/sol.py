@@ -1409,7 +1409,7 @@ def _zoom_to_selection():
 def ProfilePanel():
     """Profile view component that reactively updates when ledger or selection changes."""
     # Read reactive dependencies — this subscribes the component to changes
-    _ = edit_ledger.value  # subscribe to ledger changes
+    current_ledger = edit_ledger.value
     sel = map_selection.value
     inspected = inspected_feature.value
 
@@ -1421,8 +1421,14 @@ def ProfilePanel():
     fig = _build_profile(set(target))
 
     if fig:
-        # Convert to dict so FigurePlotly always sees a fresh object
-        solara.FigurePlotly(go.Figure(fig.to_dict()))
+        # FigurePlotly uses use_effect internally — it only re-runs when
+        # dependencies change. We pass an explicit dependency list so
+        # ledger edits, selection changes, and inspection changes all
+        # trigger a figure refresh.
+        ledger_ver = len(current_ledger) if current_ledger else 0
+        sel_key = ",".join(sorted(sel)) if sel else ""
+        insp_key = str(inspected) if inspected else ""
+        solara.FigurePlotly(fig, dependencies=[ledger_ver, sel_key, insp_key])
     else:
         solara.Info("No pipe data found for selected features. Select pipes or junctions connected to pipes.")
 
