@@ -1408,7 +1408,7 @@ def _zoom_to_selection():
 @solara.component
 def ProfilePanel():
     """Profile view component that reactively updates when ledger or selection changes."""
-    # Reading these reactive values inside a component ensures re-render on change
+    # Read all reactive dependencies to subscribe to changes
     current_ledger = edit_ledger.value
     sel = map_selection.value
     inspected = inspected_feature.value
@@ -1420,7 +1420,10 @@ def ProfilePanel():
     target = list(sel) if sel else [inspected]
     fig = _build_profile(set(target))
     if fig:
-        solara.FigurePlotly(fig)
+        # Render as interactive HTML to avoid FigurePlotly caching issues
+        import plotly.io as pio
+        html = pio.to_html(fig, full_html=False, include_plotlyjs="cdn", config={"responsive": True})
+        solara.HTML(unsafe_innerHTML=f'<div style="width:100%;">{html}</div>')
     else:
         solara.Info("No pipe data found for selected features. Select pipes or junctions connected to pipes.")
 
