@@ -747,7 +747,6 @@ def FeatureInspector():
                             # No connectivity impact — apply directly
                             new_ledger = ledger.copy()
                             apply_group(new_ledger, entries)
-                            print(f"[FIX APPLY] Setting ledger: {len(new_ledger)} entries. Changes: {[(e.feature_id, e.field, e.old_value, e.new_value) for e in entries]}")
                             edit_ledger.set(new_ledger)
                         return apply
 
@@ -1418,8 +1417,6 @@ def ProfilePanel():
     sel_key = ",".join(sorted(sel)) if sel else ""
     insp_key = str(inspected) if inspected else ""
 
-    print(f"[ProfilePanel] render: ledger_ver={ledger_ver}, sel_key={sel_key!r}, insp_key={insp_key!r}")
-
     if not sel and not inspected:
         solara.Info("Select features on the map using the rectangle tool or by clicking to view their profile.")
         return
@@ -1428,7 +1425,6 @@ def ProfilePanel():
     fig = _build_profile(set(target))
 
     if fig:
-        print(f"[ProfilePanel] FigurePlotly with deps=[{ledger_ver}, {sel_key!r}, {insp_key!r}], traces={len(fig.data)}")
         solara.FigurePlotly(fig, dependencies=[ledger_ver, sel_key, insp_key])
     else:
         solara.Info("No pipe data found for selected features. Select pipes or junctions connected to pipes.")
@@ -1557,14 +1553,6 @@ def _build_profile(selected_ids):
         ds_inv_raw = get_current_value(ledger, pid, "ds_invert", float(ds_inv_orig))
         us_inv = cv_pipe("us_invert", us_inv_raw)
         ds_inv = cv_pipe("ds_invert", ds_inv_raw)
-
-        # Clamp pipe inverts so they never go below manhole invert
-        us_mh_inv = node_inv_by_sta.get(start_sta)
-        ds_mh_inv = node_inv_by_sta.get(end_sta)
-        if us_mh_inv is not None:
-            us_inv = max(us_inv, us_mh_inv)
-        if ds_mh_inv is not None:
-            ds_inv = max(ds_inv, ds_mh_inv)
 
         # Diameter: convert to mm using unit config, then to meters for drawing
         if diameter_val and float(diameter_val) > 0:
