@@ -747,6 +747,7 @@ def FeatureInspector():
                             # No connectivity impact — apply directly
                             new_ledger = ledger.copy()
                             apply_group(new_ledger, entries)
+                            print(f"[FIX APPLY] Setting ledger: {len(new_ledger)} entries. Changes: {[(e.feature_id, e.field, e.old_value, e.new_value) for e in entries]}")
                             edit_ledger.set(new_ledger)
                         return apply
 
@@ -1413,6 +1414,12 @@ def ProfilePanel():
     sel = map_selection.value
     inspected = inspected_feature.value
 
+    ledger_ver = len(current_ledger) if current_ledger else 0
+    sel_key = ",".join(sorted(sel)) if sel else ""
+    insp_key = str(inspected) if inspected else ""
+
+    print(f"[ProfilePanel] render: ledger_ver={ledger_ver}, sel_key={sel_key!r}, insp_key={insp_key!r}")
+
     if not sel and not inspected:
         solara.Info("Select features on the map using the rectangle tool or by clicking to view their profile.")
         return
@@ -1421,13 +1428,7 @@ def ProfilePanel():
     fig = _build_profile(set(target))
 
     if fig:
-        # FigurePlotly uses use_effect internally — it only re-runs when
-        # dependencies change. We pass an explicit dependency list so
-        # ledger edits, selection changes, and inspection changes all
-        # trigger a figure refresh.
-        ledger_ver = len(current_ledger) if current_ledger else 0
-        sel_key = ",".join(sorted(sel)) if sel else ""
-        insp_key = str(inspected) if inspected else ""
+        print(f"[ProfilePanel] FigurePlotly with deps=[{ledger_ver}, {sel_key!r}, {insp_key!r}], traces={len(fig.data)}")
         solara.FigurePlotly(fig, dependencies=[ledger_ver, sel_key, insp_key])
     else:
         solara.Info("No pipe data found for selected features. Select pipes or junctions connected to pipes.")
