@@ -1321,11 +1321,14 @@ def Page():
             with solara.lab.Tab("Issue Details"):
                 IssuesTable(filtered)
             with solara.lab.Tab("Profile View"):
+                # Read ledger length here to force tab re-render when fixes are applied/undone
+                ledger_len = len(edit_ledger.value)
                 if map_selection.value or inspected_feature.value:
                     target = list(map_selection.value) if map_selection.value else [inspected_feature.value]
                     fig = _build_profile(set(target))
                     if fig:
-                        solara.FigurePlotly(fig)
+                        # Key changes with ledger so Plotly re-renders after fixes
+                        solara.FigurePlotly(fig, key=f"profile-{ledger_len}")
                     else:
                         solara.Info("No pipe data found for selected features. Select pipes or junctions connected to pipes.")
                 else:
