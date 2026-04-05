@@ -195,17 +195,15 @@ _cached_data = {}
 _last_map_widget = [None]
 
 
-def _prepare_map_data(pipes_gdf, junctions_gdf, pumps_gdf, storage_gdf, issues, network_result):
-    """Prepare all data needed for map rendering. Returns a cache key and data dict.
-    This is expensive (reprojection, GeoJSON conversion) so we cache results."""
-    # Build a simple cache key from data identity
+def _prepare_base_data(pipes_gdf, junctions_gdf, pumps_gdf, storage_gdf):
+    """Prepare GeoJSON and coordinate data (cached — only recomputes when GDFs change).
+    This is the expensive part: reprojection + GeoJSON serialization."""
     key_parts = []
     for name, gdf in [("p", pipes_gdf), ("j", junctions_gdf), ("pu", pumps_gdf), ("s", storage_gdf)]:
         if gdf is not None:
             key_parts.append(f"{name}:{id(gdf)}:{len(gdf)}")
         else:
             key_parts.append(f"{name}:None")
-    key_parts.append(f"i:{len(issues) if issues else 0}")
     cache_key = "|".join(key_parts)
 
     global _cached_data
@@ -214,7 +212,6 @@ def _prepare_map_data(pipes_gdf, junctions_gdf, pumps_gdf, storage_gdf, issues, 
 
     result = {}
 
-    # Determine center/zoom and coord_transformer
     center = (49.3, -123.1)
     zoom = 12
     coord_transformer = None
@@ -230,7 +227,6 @@ def _prepare_map_data(pipes_gdf, junctions_gdf, pumps_gdf, storage_gdf, issues, 
     result["zoom"] = zoom
     result["coord_transformer"] = coord_transformer
 
-    # Prepare pipes GeoJSON
     if pipes_gdf is not None and len(pipes_gdf) > 0:
         pipes_wgs = _ensure_wgs84(pipes_gdf.copy())
         id_col = pipes_wgs.columns[0]
@@ -239,7 +235,6 @@ def _prepare_map_data(pipes_gdf, junctions_gdf, pumps_gdf, storage_gdf, issues, 
     else:
         result["pipes_geojson"] = None
 
-    # Prepare junctions GeoJSON
     if junctions_gdf is not None and len(junctions_gdf) > 0:
         juncs_wgs = _ensure_wgs84(junctions_gdf.copy())
         id_col = juncs_wgs.columns[0]
@@ -247,8 +242,13 @@ def _prepare_map_data(pipes_gdf, junctions_gdf, pumps_gdf, storage_gdf, issues, 
     else:
         result["juncs_geojson"] = None
 
-    # Build pipe issue color map: {pipe_feature_id: color}
-    # Priority: HIGH severity > MEDIUM > LOW; within same severity, first match wins
+    _cached_data.clear()
+    _cached_data[cache_key] = result
+    return result
+
+
+def _prepare_issue_overlays(issues, network_result, coord_transformer):
+    """Prepare issue colors and markers (lightweight — not cached, recomputed on filter change)."""
     pipe_issue_colors = {}
     junc_issue_colors = {}
     SEVERITY_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
@@ -263,10 +263,7 @@ def _prepare_map_data(pipes_gdf, junctions_gdf, pumps_gdf, storage_gdf, issues, 
             elif color and issue.issue_type not in PIPE_ISSUE_TYPES:
                 if fid not in junc_issue_colors:
                     junc_issue_colors[fid] = color
-    result["pipe_issue_colors"] = pipe_issue_colors
-    result["junc_issue_colors"] = junc_issue_colors
 
-    # Prepare issue marker locations
     markers = []
     if issues and network_result:
         G = network_result["graph"]
@@ -302,12 +299,8 @@ def _prepare_map_data(pipes_gdf, junctions_gdf, pumps_gdf, storage_gdf, issues, 
                 "severity": issue.severity,
                 "display": display_name,
             })
-    result["markers"] = markers
 
-    # Keep only last cache entry to avoid memory growth
-    _cached_data.clear()
-    _cached_data[cache_key] = result
-    return result
+    return pipe_issue_colors, junc_issue_colors, markers
 
 
 @solara.component
@@ -326,7 +319,7 @@ def build_leaflet_map(
     visible_layers=None,
 ):
     """Build and render an ipyleaflet map with all layers.
-    Preserves map center/zoom across re-renders (selection changes etc.)."""
+    Preserves map widget across re-renders — only rebuilds when GDFs change."""
 
     if visible_layers is None:
         visible_layers = {}
@@ -335,98 +328,161 @@ def build_leaflet_map(
     if issues is None:
         issues = []
 
-    # Prepare data (cached — only recomputes when GDFs/issues change)
-    data = _prepare_map_data(
+    # Prepare base data (cached — only recomputes when GDFs change)
+    base = _prepare_base_data(
         pipes_gdf, junctions_gdf, pumps_gdf, storage_gdf,
-        issues, network_result,
     )
 
-    # ── Persistent map view ──
-    # Read center/zoom from the PREVIOUS map widget (if it exists).
-    # This captures any user pan/zoom without fragile observe/skip logic.
-    prev = _last_map_widget[0]
-    if prev is not None:
-        try:
-            center = tuple(prev.center)
-            zoom = prev.zoom
-        except Exception:
-            center = data["center"]
-            zoom = data["zoom"]
-    else:
-        center = data["center"]
-        zoom = data["zoom"]
-
-    # Build the map
-    m = ipyleaflet.Map(
-        center=center,
-        zoom=zoom,
-        basemap=ipyleaflet.basemaps.CartoDB.DarkMatter,
-        layout={"height": "620px", "width": "100%"},
-        scroll_wheel_zoom=True,
+    # Prepare issue overlays (lightweight — recomputes on filter change)
+    pipe_issue_colors, junc_issue_colors, markers = _prepare_issue_overlays(
+        issues, network_result, base.get("coord_transformer"),
     )
-    _last_map_widget[0] = m
 
-    # ── Pipes Layer ──
-    pipe_colors = data.get("pipe_issue_colors", {})
-    if data["pipes_geojson"] and visible_layers.get("Pipes", True):
-        def pipe_style(feature):
-            fid = feature.get("properties", {}).get("id", "")
-            if fid in selected_ids:
-                return {"color": "#00FFFF", "weight": 6, "opacity": 0.9}
-            issue_color = pipe_colors.get(fid)
-            if issue_color:
-                return {"color": issue_color, "weight": 4, "opacity": 0.9}
-            return {"color": "#4A90D9", "weight": 3, "opacity": 0.7}
+    # Cache key for whether we need a full map rebuild (only on GDF change)
+    gdf_key_parts = []
+    for name, gdf in [("p", pipes_gdf), ("j", junctions_gdf)]:
+        if gdf is not None:
+            gdf_key_parts.append(f"{name}:{id(gdf)}:{len(gdf)}")
+        else:
+            gdf_key_parts.append(f"{name}:None")
+    gdf_key = "|".join(gdf_key_parts)
 
-        def on_pipe_click(feature=None, **kwargs):
-            if feature:
+    # Use state to persist the map widget across re-renders
+    map_state, set_map_state = solara.use_state({"key": None, "widget": None})
+
+    need_rebuild = map_state["key"] != gdf_key
+
+    if need_rebuild:
+        # Full rebuild — new data loaded
+        prev = _last_map_widget[0]
+        if prev is not None:
+            try:
+                center = tuple(prev.center)
+                zoom = prev.zoom
+            except Exception:
+                center = base["center"]
+                zoom = base["zoom"]
+        else:
+            center = base["center"]
+            zoom = base["zoom"]
+
+        m = ipyleaflet.Map(
+            center=center,
+            zoom=zoom,
+            basemap=ipyleaflet.basemaps.CartoDB.DarkMatter,
+            layout={"height": "620px", "width": "100%"},
+            scroll_wheel_zoom=True,
+        )
+
+        # ── Pipes Layer ──
+        if base["pipes_geojson"] and visible_layers.get("Pipes", True):
+            def pipe_style(feature):
                 fid = feature.get("properties", {}).get("id", "")
-                if fid:
-                    if on_feature_click:
+                if fid in selected_ids:
+                    return {"color": "#00FFFF", "weight": 6, "opacity": 0.9}
+                ic = pipe_issue_colors.get(fid)
+                if ic:
+                    return {"color": ic, "weight": 4, "opacity": 0.9}
+                return {"color": "#4A90D9", "weight": 3, "opacity": 0.7}
+
+            def on_pipe_click(feature=None, **kwargs):
+                if feature:
+                    fid = feature.get("properties", {}).get("id", "")
+                    if fid and on_feature_click:
                         on_feature_click(fid)
 
-        pipes_layer = ipyleaflet.GeoJSON(
-            data=data["pipes_geojson"],
-            style_callback=pipe_style,
-            hover_style={"color": "#FFFFFF", "weight": 5},
-            name="Pipes",
-        )
-        pipes_layer.on_click(on_pipe_click)
-        m.add(pipes_layer)
+            pipes_layer = ipyleaflet.GeoJSON(
+                data=base["pipes_geojson"],
+                style_callback=pipe_style,
+                hover_style={"color": "#FFFFFF", "weight": 5},
+                name="Pipes",
+            )
+            pipes_layer.on_click(on_pipe_click)
+            m.add(pipes_layer)
 
-    # ── Junctions Layer ──
-    if data["juncs_geojson"] and visible_layers.get("Junctions", True):
-        def junc_style(feature):
-            fid = feature.get("properties", {}).get("id", "")
-            if fid in selected_ids:
+        # ── Junctions Layer ──
+        if base["juncs_geojson"] and visible_layers.get("Junctions", True):
+            def junc_style(feature):
+                fid = feature.get("properties", {}).get("id", "")
+                if fid in selected_ids:
+                    return {
+                        "color": "#00FFFF", "fillColor": "#00FFFF",
+                        "weight": 2, "fillOpacity": 0.8, "radius": 6,
+                    }
                 return {
-                    "color": "#00FFFF", "fillColor": "#00FFFF",
-                    "weight": 2, "fillOpacity": 0.8, "radius": 6,
+                    "color": "#4A90D9", "fillColor": "#4A90D9",
+                    "weight": 1, "fillOpacity": 0.7, "radius": 4,
                 }
-            return {
-                "color": "#4A90D9", "fillColor": "#4A90D9",
-                "weight": 1, "fillOpacity": 0.7, "radius": 4,
-            }
 
-        def on_junc_click(feature=None, **kwargs):
-            if feature:
-                fid = feature.get("properties", {}).get("id", "")
-                if fid:
-                    if on_feature_click:
+            def on_junc_click(feature=None, **kwargs):
+                if feature:
+                    fid = feature.get("properties", {}).get("id", "")
+                    if fid and on_feature_click:
                         on_feature_click(fid)
 
-        juncs_layer = ipyleaflet.GeoJSON(
-            data=data["juncs_geojson"],
-            point_style={"radius": 4, "fillOpacity": 0.7},
-            style_callback=junc_style,
-            hover_style={"color": "#FFFFFF", "weight": 3, "fillOpacity": 1.0},
-            name="Junctions",
-        )
-        juncs_layer.on_click(on_junc_click)
-        m.add(juncs_layer)
+            juncs_layer = ipyleaflet.GeoJSON(
+                data=base["juncs_geojson"],
+                point_style={"radius": 4, "fillOpacity": 0.7},
+                style_callback=junc_style,
+                hover_style={"color": "#FFFFFF", "weight": 3, "fillOpacity": 1.0},
+                name="Junctions",
+            )
+            juncs_layer.on_click(on_junc_click)
+            m.add(juncs_layer)
 
-    # ── Issue Markers ──
-    for mkr in data["markers"]:
+        # ── Draw Control for box selection ──
+        if on_box_select:
+            draw_control = ipyleaflet.DrawControl(
+                rectangle={"shapeOptions": {
+                    "color": "#00FFFF",
+                    "fillColor": "#00FFFF",
+                    "fillOpacity": 0.1,
+                    "weight": 2,
+                    "dashArray": "5,5",
+                }},
+                polyline={}, polygon={}, circle={},
+                circlemarker={}, marker={},
+                edit=False, remove=False,
+            )
+
+            def handle_draw(target, action, geo_json):
+                if action == "created" and geo_json:
+                    geom_type = geo_json.get("geometry", {}).get("type", "")
+                    coords = geo_json.get("geometry", {}).get("coordinates", [])
+                    if geom_type == "Polygon" and coords:
+                        ring = coords[0]
+                        lons = [c[0] for c in ring]
+                        lats = [c[1] for c in ring]
+                        bbox = [min(lats), min(lons), max(lats), max(lons)]
+                        found = _find_features_in_bbox(
+                            bbox, base["pipes_geojson"], base["juncs_geojson"]
+                        )
+                        if found:
+                            on_box_select(found)
+                    draw_control.clear()
+
+            draw_control.on_draw(handle_draw)
+            m.add(draw_control)
+
+        m.add(ipyleaflet.LayersControl(position="topright"))
+        m.add(ipyleaflet.ScaleControl(position="bottomleft"))
+
+        _last_map_widget[0] = m
+        set_map_state({"key": gdf_key, "widget": m})
+    else:
+        m = map_state["widget"]
+
+    # ── Issue markers (always updated — added/removed as a marker group) ──
+    # Remove old marker group if it exists
+    _old_group = getattr(m, '_issue_marker_group', None)
+    if _old_group is not None:
+        try:
+            m.remove(_old_group)
+        except Exception:
+            pass
+
+    marker_group = ipyleaflet.MarkerCluster(name="Issues")
+    for mkr in markers:
         icon = ipyleaflet.AwesomeIcon(
             name="exclamation-triangle",
             marker_color="red" if mkr["severity"] == "HIGH" else "orange" if mkr["severity"] == "MEDIUM" else "blue",
@@ -445,49 +501,9 @@ def build_leaflet_map(
             return handler
 
         marker.on_click(make_issue_click(mkr["fid"]))
-        m.add(marker)
+        marker_group.markers = marker_group.markers + (marker,)
 
-    # ── Draw Control for box selection ──
-    if on_box_select:
-        draw_control = ipyleaflet.DrawControl(
-            rectangle={"shapeOptions": {
-                "color": "#00FFFF",
-                "fillColor": "#00FFFF",
-                "fillOpacity": 0.1,
-                "weight": 2,
-                "dashArray": "5,5",
-            }},
-            polyline={},
-            polygon={},
-            circle={},
-            circlemarker={},
-            marker={},
-            edit=False,
-            remove=False,
-        )
-
-        def handle_draw(target, action, geo_json):
-            if action == "created" and geo_json:
-                geom_type = geo_json.get("geometry", {}).get("type", "")
-                coords = geo_json.get("geometry", {}).get("coordinates", [])
-                if geom_type == "Polygon" and coords:
-                    ring = coords[0]
-                    lons = [c[0] for c in ring]
-                    lats = [c[1] for c in ring]
-                    bbox = [min(lats), min(lons), max(lats), max(lons)]
-                    found = _find_features_in_bbox(
-                        bbox, data["pipes_geojson"], data["juncs_geojson"]
-                    )
-                    if found:
-                        on_box_select(found)
-                # Clear the drawn rectangle
-                draw_control.clear()
-
-        draw_control.on_draw(handle_draw)
-        m.add(draw_control)
-
-    # Layer control + scale
-    m.add(ipyleaflet.LayersControl(position="topright"))
-    m.add(ipyleaflet.ScaleControl(position="bottomleft"))
+    m.add(marker_group)
+    m._issue_marker_group = marker_group
 
     solara.display(m)
