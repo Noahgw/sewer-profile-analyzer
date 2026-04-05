@@ -1321,17 +1321,7 @@ def Page():
             with solara.lab.Tab("Issue Details"):
                 IssuesTable(filtered)
             with solara.lab.Tab("Profile View"):
-                # Read ledger length here to force tab re-render when fixes are applied/undone
-                ledger_len = len(edit_ledger.value)
-                if map_selection.value or inspected_feature.value:
-                    target = list(map_selection.value) if map_selection.value else [inspected_feature.value]
-                    fig = _build_profile(set(target))
-                    if fig:
-                        solara.FigurePlotly(fig)
-                    else:
-                        solara.Info("No pipe data found for selected features. Select pipes or junctions connected to pipes.")
-                else:
-                    solara.Info("Select features on the map using the rectangle tool or by clicking to view their profile.")
+                ProfilePanel()
             with solara.lab.Tab("Pipes"):
                 DataTable("pipes")
             with solara.lab.Tab("Junctions"):
@@ -1413,6 +1403,26 @@ def _zoom_to_selection():
     if widget is not None:
         widget.center = center
         widget.zoom = zoom
+
+
+@solara.component
+def ProfilePanel():
+    """Profile view component that reactively updates when ledger or selection changes."""
+    # Reading these reactive values inside a component ensures re-render on change
+    current_ledger = edit_ledger.value
+    sel = map_selection.value
+    inspected = inspected_feature.value
+
+    if not sel and not inspected:
+        solara.Info("Select features on the map using the rectangle tool or by clicking to view their profile.")
+        return
+
+    target = list(sel) if sel else [inspected]
+    fig = _build_profile(set(target))
+    if fig:
+        solara.FigurePlotly(fig)
+    else:
+        solara.Info("No pipe data found for selected features. Select pipes or junctions connected to pipes.")
 
 
 def _build_profile(selected_ids):
